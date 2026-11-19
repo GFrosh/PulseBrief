@@ -49,6 +49,8 @@ if (isFirebaseConfigured) {
     if (env.VITE_APPCHECK_DEBUG_TOKEN) {
       (self as unknown as Record<string, unknown>).FIREBASE_APPCHECK_DEBUG_TOKEN =
         env.VITE_APPCHECK_DEBUG_TOKEN;
+    } else if(env.DEV) {
+      (self as unknown as Record<string, unknown>).FIREBASE_APPCHECK_DEBUG_TOKEN = true;
     }
 
     if (env.VITE_RECAPTCHA_SITE_KEY) {
