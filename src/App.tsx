@@ -42,6 +42,7 @@ import { saveSession } from './services/sessionStore';
 import styles from './App.module.css';
 
 type ModalPhase = 'ready' | 'redacting' | 'cloud';
+type MobilePane = 'transcript' | 'goals' | 'copilot';
 
 const makeId = (prefix: string): string =>
   `${prefix}_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 7)}`;
@@ -71,7 +72,12 @@ const CAPTURE_MODE =
 export default function App() {
   const initialScenario = getScenario(INITIAL_SCENARIO_ID);
 
-  const [theme, setTheme] = useState<'dark' | 'light'>('dark');
+  const [mobilePane, setMobilePane] = useState<MobilePane>('transcript');
+  const [theme, setTheme] = useState<'dark' | 'light'>(() => {
+    const saved = window.localStorage.getItem('pulsebrief-theme');
+    if (saved === 'dark' || saved === 'light') return saved;
+    return window.matchMedia('(prefers-color-scheme: light)').matches ? 'light' : 'dark';
+  });
   const [scenarioId, setScenarioId] = useState<string>(INITIAL_SCENARIO_ID);
   const [goals, setGoals] = useState<SessionGoal[]>(() => seedGoals(initialScenario));
   const [segments, setSegments] = useState<TranscriptSegment[]>([]);
@@ -124,6 +130,7 @@ export default function App() {
 
   useEffect(() => {
     document.documentElement.dataset.theme = theme;
+    window.localStorage.setItem('pulsebrief-theme', theme);
   }, [theme]);
 
   /* --- Environment probes ------------------------------------------------ */
@@ -668,6 +675,8 @@ export default function App() {
 
   useEffect(() => () => stopAll(), [stopAll]);
 
+  const coveredCount = goals.filter((goal) => goal.status === 'covered').length;
+  const activeNudgeCount = nudges.filter((nudge) => !nudge.dismissed).length;
   const demoMode = isDemoEngine;
   const localActive = !online || nano === 'AVAILABLE' || demoMode;
   const micSupported = isLiveMicSupported();
@@ -687,49 +696,87 @@ export default function App() {
         onToggleTheme={() => setTheme((value) => (value === 'dark' ? 'light' : 'dark'))}
       />
 
+      <nav className={styles.mobileNav} aria-label="Workspace views">
+        <button
+          type="button"
+          className={`${styles.mobileTab} ${mobilePane === 'transcript' ? styles.mobileTabActive : ''}`}
+          aria-pressed={mobilePane === 'transcript'}
+          onClick={() => setMobilePane('transcript')}
+        >
+          <span>Transcript</span>
+          {segments.length > 0 && <span className={styles.mobileBadge}>{segments.length}</span>}
+        </button>
+        <button
+          type="button"
+          className={`${styles.mobileTab} ${mobilePane === 'goals' ? styles.mobileTabActive : ''}`}
+          aria-pressed={mobilePane === 'goals'}
+          onClick={() => setMobilePane('goals')}
+        >
+          <span>Goals</span>
+          <span className={styles.mobileBadge}>
+            {coveredCount}/{goals.length}
+          </span>
+        </button>
+        <button
+          type="button"
+          className={`${styles.mobileTab} ${mobilePane === 'copilot' ? styles.mobileTabActive : ''}`}
+          aria-pressed={mobilePane === 'copilot'}
+          onClick={() => setMobilePane('copilot')}
+        >
+          <span>Co-pilot</span>
+          {activeNudgeCount > 0 && <span className={styles.mobileBadge}>{activeNudgeCount}</span>}
+        </button>
+      </nav>
+
       <main className={styles.workspace}>
-        <GoalSidebar
-          goals={goals}
-          scenarioId={scenarioId}
-          onScenarioChange={handleScenarioChange}
-          onUpdateGoal={handleUpdateGoal}
-          onAddGoal={handleAddGoal}
-          onDeleteGoal={handleDeleteGoal}
-          onReset={handleResetGoals}
-          onToggleGoal={handleToggleGoal}
-        />
+        <div className={`${styles.panelSlot} ${mobilePane !== 'goals' ? styles.panelHiddenMobile : ''}`}>
+          <GoalSidebar
+            goals={goals}
+            scenarioId={scenarioId}
+            onScenarioChange={handleScenarioChange}
+            onUpdateGoal={handleUpdateGoal}
+            onAddGoal={handleAddGoal}
+            onDeleteGoal={handleDeleteGoal}
+            onReset={handleResetGoals}
+            onToggleGoal={handleToggleGoal}
+          />
+        </div>
 
-        <LiveTranscript
-          segments={segments}
-          interim={interim}
-          onStartMic={startMic}
-          onStopMic={stopMic}
-          onSimulate={startSimulation}
-          onStopSimulation={stopSimulation}
-          onEndCall={handleEndCall}
-          onSpeedChange={handleSpeedChange}
-          speed={speed}
-          listening={listening}
-          simulating={simulating}
-          micSupported={micSupported}
-          canSynthesize={segments.length > 0}
-          synthesizing={phase === 'redacting' || phase === 'cloud'}
-          elapsedLabel={formatElapsed(elapsed)}
-          sessionTitle={scenario.company}
-          sessionMeta={`${scenario.contact} · ${scenario.role}`}
-          scriptedSeconds={scriptedSeconds}
-          error={error}
-          onDismissError={() => setError(null)}
-        />
+        <div className={`${styles.panelSlot} ${mobilePane !== 'transcript' ? styles.panelHiddenMobile : ''}`}>
+          <LiveTranscript
+            segments={segments}
+            interim={interim}
+            onStartMic={startMic}
+            onStopMic={stopMic}
+            onSimulate={startSimulation}
+            onStopSimulation={stopSimulation}
+            onEndCall={handleEndCall}
+            onSpeedChange={handleSpeedChange}
+            speed={speed}
+            listening={listening}
+            simulating={simulating}
+            micSupported={micSupported}
+            canSynthesize={segments.length > 0}
+            synthesizing={phase === 'redacting' || phase === 'cloud'}
+            elapsedLabel={formatElapsed(elapsed)}
+            sessionTitle={scenario.company}
+            sessionMeta={`${scenario.contact} · ${scenario.role}`}
+            scriptedSeconds={scriptedSeconds}
+            error={error}
+            onDismissError={() => setError(null)}
+          />
+        </div>
 
-        <CoPilotFeed
-          nudges={nudges}
-          activity={activity}
-          onDismiss={handleNudgeDismiss}
-          onMarkAsked={handleNudgeAsked}
-          active={listening || simulating}
-          localActive={localActive}
-        />
+        <div className={`${styles.panelSlot} ${mobilePane !== 'copilot' ? styles.panelHiddenMobile : ''}`}>
+          <CoPilotFeed
+            nudges={nudges}
+            activity={activity}
+            onDismiss={handleNudgeDismiss}
+            onMarkAsked={handleNudgeAsked}
+            active={listening || simulating}
+            localActive={localActive}
+          />
+        </div>
       </main>
 
       <PostCallBriefModal
