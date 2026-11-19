@@ -37,8 +37,8 @@ import type {
    fully demoable offline. Real calls are used whenever credentials exist.
    ========================================================================== */
 
-export const MODEL_EDGE = 'gemini-2.5-flash';
-export const MODEL_CLOUD = 'gemini-2.5-pro';
+export const MODEL_EDGE = 'gemini-3.5-flash-lite';
+export const MODEL_CLOUD = 'gemini-3.8-flash';
 
 const FORCE_DEMO = (import.meta.env.VITE_DEMO_ENGINE ?? '') === 'true';
 export const isDemoEngine = !isFirebaseConfigured || FORCE_DEMO;
@@ -159,7 +159,7 @@ export const nanoBadgeText = (status: NanoAvailability): string => {
     case 'CHECKING':
       return 'Probing on-device model…';
     default:
-      return 'Cloud Fallback: Gemini 2.5';
+      return 'Cloud Fallback: Gemini 3.8 Flash';
   }
 };
 
@@ -429,7 +429,7 @@ function localEvaluateGoals(
 
   return {
     data: { updates },
-    meta: { source: isDemoEngine ? 'DEMO_ENGINE' : 'LOCAL_NANO', latencyMs, tokens: 0 },
+    meta: { source: 'DEMO_ENGINE', latencyMs, tokens: 0 },
   };
 }
 
@@ -447,7 +447,7 @@ function localNudge(
 
   const empty: NudgeDraft = { shouldNudge: false };
   const meta = {
-    source: isDemoEngine ? ('DEMO_ENGINE' as const) : ('LOCAL_NANO' as const),
+    source: 'DEMO_ENGINE' as const,
     latencyMs,
     tokens: 0,
   };
@@ -583,7 +583,7 @@ function localRedact(transcript: string, latencyMs: number): InferenceResult<Red
   return {
     data: regexPass,
     meta: {
-      source: isDemoEngine ? 'DEMO_ENGINE' : 'LOCAL_NANO',
+      source: 'DEMO_ENGINE',
       latencyMs,
       tokens: 0,
     },
@@ -931,7 +931,7 @@ export async function redactPiiLocally(
   // a conservative Nano must never be the reason an email reaches the cloud.
   const base = remote?.data.sanitizedTranscript ?? fullTranscript;
   const safetyPass = applyDeterministicRedaction(base);
-  const source: InferenceSource = remote ? remote.source : isDemoEngine ? 'DEMO_ENGINE' : 'LOCAL_NANO';
+  const source: InferenceSource = remote ? remote.source : 'DEMO_ENGINE';
 
   return {
     data: safetyPass,
@@ -1059,6 +1059,8 @@ export function mergeTelemetry(
   inputText: string,
 ): InferenceTelemetry {
   if (result.meta.latencyMs === 0) return telemetry;
+  // A backup answer in a real Firebase session is not an AI call, so it is not counted.
+  if (result.meta.source === 'DEMO_ENGINE' && !isDemoEngine) return telemetry;
 
   if (operation === 'local') {
     return {
@@ -1087,7 +1089,7 @@ export function nudgeFromDraft(
     triggerType: draft.triggerType ?? 'FOLLOW_UP_OPPORTUNITY',
     detectedContext: draft.detectedContext ?? '',
     suggestedQuestion: draft.suggestedQuestion,
-    source: meta.source === 'CLOUD_FALLBACK' || meta.source === 'CLOUD_GEMINI' ? 'CLOUD_FALLBACK' : 'LOCAL_NANO',
+    source: meta.source,
     latencyMs: meta.latencyMs,
   };
 }

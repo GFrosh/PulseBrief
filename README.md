@@ -17,7 +17,7 @@ Most AI note-takers are cloud-first: raw audio and raw transcripts leave the dev
 | Live goal tracking | Gemini Nano 4 (on-device) | **Nothing** |
 | Live follow-up nudges | Gemini Nano 4 (on-device) | **Nothing** |
 | PII redaction | Gemini Nano 4 + deterministic regex net | **Nothing** |
-| Post-call synthesis | Cloud Gemini 2.5 Pro | Only the **sanitized** transcript |
+| Post-call synthesis | Cloud Gemini 3.8 Flash | Only the **sanitized** transcript |
 
 If Nano is missing, still downloading, or the machine is offline, the app degrades deliberately instead of crashing — the status pill changes, the routing log records the fallback, and the privacy gate still runs locally.
 
@@ -60,7 +60,7 @@ If Nano is missing, still downloading, or the machine is offline, the app degrad
                                        │ sanitized transcript only                         │
                                        ▼                                                   │
                         ┌──────────────────────────────┐                                   │
-                        │ OP 4 synthesizePostCallBrief │  ONLY_IN_CLOUD, gemini-2.5-pro    │
+                        │ OP 4 synthesizePostCallBrief │  ONLY_IN_CLOUD, gemini-3.8-flash  │
                         │ summary · CRM · email draft  │  Firestore write (offline-first)  │
                         └──────────────────────────────┘                                   │
                                                                                            │
@@ -72,7 +72,7 @@ If Nano is missing, still downloading, or the machine is offline, the app degrad
 1. **Live goal scoring** — every final transcript segment triggers a Nano pass that returns `{id, status, evidenceSnippet}` for goals that were just evidenced. Statuses only move forward.
 2. **Follow-up nudges** — hedged language ("budgets are weird right now", "we kind of use spreadsheets") produces one specific question. The engine stays quiet on concrete answers and every other turn, because a co-pilot that interrupts constantly is worse than none.
 3. **Privacy gate** — Nano masks PII, then a **deterministic regex pass always runs on top**. A conservative model can never be the reason an email reaches the cloud. The sanitized text must also stay ≥60% of the original length, or the model rewrite is discarded.
-4. **Cloud synthesis** — the sanitized transcript goes to `gemini-2.5-pro` with `InferenceMode.ONLY_IN_CLOUD`. Result: five bullet summary, structured CRM fields, personalized follow-up email.
+4. **Cloud synthesis** — the sanitized transcript goes to `gemini-3.8-flash` with `InferenceMode.ONLY_IN_CLOUD`. Result: five bullet summary, structured CRM fields, personalized follow-up email.
 
 Routing mode is user-selectable, which is how judges can watch the split live:
 
@@ -197,7 +197,7 @@ const ai = getAI(app, { backend: new GoogleAIBackend() });
 // On-device preferred — falls back to cloud inside the SDK when Nano is absent
 getGenerativeModel(ai, {
   mode: InferenceMode.PREFER_ON_DEVICE,
-  inCloudParams: { model: 'gemini-2.5-flash', generationConfig: { temperature: 0.2, responseMimeType: 'application/json' } },
+  inCloudParams: { model: 'gemini-3.5-flash-lite', generationConfig: { temperature: 0.2, responseMimeType: 'application/json' } },
 });
 
 // Hard local — used by FORCE_LOCAL and the privacy gate
@@ -206,7 +206,7 @@ getGenerativeModel(ai, { mode: InferenceMode.ONLY_ON_DEVICE, /* ... */ });
 // Cloud only — post-call synthesis
 getGenerativeModel(ai, {
   mode: InferenceMode.ONLY_IN_CLOUD,
-  inCloudParams: { model: 'gemini-2.5-pro', generationConfig: { temperature: 0.3, responseMimeType: 'application/json' } },
+  inCloudParams: { model: 'gemini-3.8-flash', generationConfig: { temperature: 0.3, responseMimeType: 'application/json' } },
 });
 ```
 

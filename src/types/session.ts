@@ -36,7 +36,7 @@ export interface CoPilotNudge {
   triggerType: NudgeTrigger;
   detectedContext: string;
   suggestedQuestion: string;
-  source: 'LOCAL_NANO' | 'CLOUD_FALLBACK';
+  source: InferenceSource;
   latencyMs: number;
   dismissed?: boolean;
   asked?: boolean;

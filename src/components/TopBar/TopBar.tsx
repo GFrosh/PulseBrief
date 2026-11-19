@@ -39,7 +39,7 @@ function resolvePill(
   if (routingMode === 'FORCE_CLOUD') {
     return {
       tone: 'cloud',
-      label: 'Cloud Forced: Gemini 2.5 Pro',
+      label: 'Cloud Forced: Gemini 3.8 Flash',
       detail: 'Every call is routed to Cloud Gemini via Firebase AI Logic.',
     };
   }
@@ -76,7 +76,7 @@ function resolvePill(
   }
   return {
     tone: 'cloud',
-    label: 'Cloud Fallback: Gemini 2.5',
+    label: 'Cloud Fallback: Gemini 3.8 Flash',
     detail: 'This browser has no on-device model. Requests route to Cloud Gemini.',
   };
 }
