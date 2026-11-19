@@ -120,7 +120,7 @@ function NudgeCard({
         </span>
         <span className={styles.privacyDivider} aria-hidden="true" />
         <span className={styles.privacyNote}>
-          {nudge.source === 'LOCAL_NANO' ? 'Raw audio stayed in RAM' : 'Cloud fallback used'}
+          {nudge.source === 'LOCAL_NANO' ? 'Answered on this device' : 'Cloud fallback used'}
         </span>
       </div>
 
@@ -205,7 +205,7 @@ export default function CoPilotFeed({ nudges, activity, onDismiss, onMarkAsked, 
               <svg viewBox="0 0 12 12" width="9" height="9" aria-hidden="true">
                 <path d="M6.8 1 2.4 7h2.4L5 11l4.6-6.4H7.2L6.8 1Z" fill="currentColor" />
               </svg>
-              sub-500ms · no audio uploaded
+              fast on device · no audio saved
             </span>
           </div>
         ) : (

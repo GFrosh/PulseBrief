@@ -124,7 +124,7 @@ VITE_APPCHECK_DEBUG_TOKEN=...
 
 4. **App Check** → register the web app with **reCAPTCHA Enterprise**, put the site key in `VITE_RECAPTCHA_SITE_KEY`.
 5. For local development, create a **debug token** in App Check → Apps → ⋮ → *Manage debug tokens*, and put it in `VITE_APPCHECK_DEBUG_TOKEN`. It is injected onto `self.FIREBASE_APPCHECK_DEBUG_TOKEN` *before* `initializeAppCheck` runs.
-6. **Authentication** → enable **Anonymous**.
+6. **Authentication** → enable **Anonymous** (guests) and **Google** (optional sign in that keeps a guest's briefs).
 7. **Firestore** → create a database. Suggested rules (owner-scoped, append-only):
 
 ```js
@@ -225,7 +225,7 @@ Every call is wrapped in `performance.now()` timing and mapped to telemetry, whi
 
 ## Privacy model, precisely
 
-- **Audio never leaves the tab.** `webkitSpeechRecognition` transcribes locally in the browser; no audio buffer is uploaded by PulseBrief.
+- **PulseBrief never records, stores or uploads audio.** Speech to text is done by the browser's own Web Speech API, and Chrome may use Google's speech service for that step. Only the resulting text is used by the app, and it is masked on this device before any cloud model sees it.
 - **PII masking is deterministic-first.** Regex masks emails, phones (9–15 digits), street addresses, SSNs and account IDs (`ACCT-88213`, `PO-12345`, …). The Nano pass runs *before* the regex net, and its output is re-scanned.
 - **The cloud never sees the raw transcript.** `synthesizePostCallBrief` accepts only the sanitized string; the raw text is kept in memory for the transcript toggle and is never included in the cloud prompt.
 - **Local persistence is opt-in by configuration.** Without Firebase, sessions stay in `localStorage`; with Firebase, they go to owner-scoped Firestore documents with offline persistence enabled.
