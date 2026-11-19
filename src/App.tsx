@@ -1,0 +1,749 @@
+import { useCallback, useEffect, useRef, useState } from 'react';
+import TopBar from './components/TopBar/TopBar';
+import GoalSidebar from './components/GoalSidebar/GoalSidebar';
+import LiveTranscript from './components/LiveTranscript/LiveTranscript';
+import CoPilotFeed from './components/CoPilotFeed/CoPilotFeed';
+import PostCallBriefModal from './components/PostCallBriefModal/PostCallBriefModal';
+import type {
+  ActivityEntry,
+  CoPilotNudge,
+  InferenceTelemetry,
+  InferenceSource,
+  NanoAvailability,
+  PostCallBrief,
+  RoutingMode,
+  Scenario,
+  SessionGoal,
+  Speaker,
+  SyncStatus,
+  TranscriptSegment,
+} from './types/session';
+import { getScenario, INITIAL_SCENARIO_ID } from './data/demoScenario';
+import {
+  LiveMicRecorder,
+  SimulatedCallStreamer,
+  isLiveMicSupported,
+  scenarioDurationSeconds,
+} from './services/speechService';
+import {
+  applyDeterministicRedaction,
+  checkOnDeviceNanoStatus,
+  createEmptyTelemetry,
+  evaluateLiveGoals,
+  generateLiveFollowUpNudge,
+  isCloudReady,
+  isDemoEngine,
+  mergeTelemetry,
+  nudgeFromDraft,
+  redactPiiLocally,
+  synthesizePostCallBrief,
+} from './services/hybridAI';
+import { saveSession } from './services/sessionStore';
+import styles from './App.module.css';
+
+type ModalPhase = 'ready' | 'redacting' | 'cloud';
+
+const makeId = (prefix: string): string =>
+  `${prefix}_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 7)}`;
+
+const sleep = (ms: number): Promise<void> => new Promise((resolve) => window.setTimeout(resolve, ms));
+
+const buildTranscript = (segments: TranscriptSegment[]): string =>
+  segments.map((segment) => `${segment.speaker}: ${segment.text}`).join('\n');
+
+const hasPii = (text: string): boolean => applyDeterministicRedaction(text).redactionCount > 0;
+
+const seedGoals = (scenario: Scenario): SessionGoal[] =>
+  scenario.goals.map((goal) => ({
+    id: goal.id,
+    text: goal.text,
+    status: 'pending',
+    keywords: [...goal.keywords],
+  }));
+
+const formatElapsed = (seconds: number): string =>
+  `${String(Math.floor(seconds / 60)).padStart(2, '0')}:${String(seconds % 60).padStart(2, '0')}`;
+
+/** Automated screenshot / smoke-test mode: same pipeline, no artificial pacing. */
+const CAPTURE_MODE =
+  typeof window !== 'undefined' && new URLSearchParams(window.location.search).get('capture') === '1';
+
+export default function App() {
+  const initialScenario = getScenario(INITIAL_SCENARIO_ID);
+
+  const [theme, setTheme] = useState<'dark' | 'light'>('dark');
+  const [scenarioId, setScenarioId] = useState<string>(INITIAL_SCENARIO_ID);
+  const [goals, setGoals] = useState<SessionGoal[]>(() => seedGoals(initialScenario));
+  const [segments, setSegments] = useState<TranscriptSegment[]>([]);
+  const [interim, setInterim] = useState<{ speaker: Speaker; text: string } | null>(null);
+  const [nudges, setNudges] = useState<CoPilotNudge[]>([]);
+  const [activity, setActivity] = useState<ActivityEntry[]>([]);
+  const [telemetry, setTelemetry] = useState<InferenceTelemetry>(() => createEmptyTelemetry());
+  const [routingMode, setRoutingMode] = useState<RoutingMode>('AUTO_HYBRID');
+  const [nano, setNano] = useState<NanoAvailability>('CHECKING');
+  const [online, setOnline] = useState<boolean>(() => navigator.onLine);
+  const [listening, setListening] = useState(false);
+  const [simulating, setSimulating] = useState(false);
+  const [speed, setSpeed] = useState(1);
+  const [elapsed, setElapsed] = useState(0);
+  const [error, setError] = useState<string | null>(null);
+  const [modalOpen, setModalOpen] = useState(false);
+  const [phase, setPhase] = useState<ModalPhase>('ready');
+  const [brief, setBrief] = useState<PostCallBrief | null>(null);
+  const [redactionCount, setRedactionCount] = useState(0);
+  const [syncStatus, setSyncStatus] = useState<SyncStatus>('SAVING');
+
+  const scenario = getScenario(scenarioId);
+
+  const goalsRef = useRef(goals);
+  const segmentsRef = useRef<TranscriptSegment[]>(segments);
+  const telemetryRef = useRef<InferenceTelemetry>(telemetry);
+  const nanoRef = useRef<NanoAvailability>('CHECKING');
+  const routingRef = useRef<RoutingMode>('AUTO_HYBRID');
+  const speedRef = useRef(1);
+  const turnCountRef = useRef(0);
+  const recorderRef = useRef<LiveMicRecorder | null>(null);
+  const streamerRef = useRef<SimulatedCallStreamer | null>(null);
+  const analysisBusyRef = useRef(false);
+  const analysisPendingRef = useRef(false);
+  const synthBusyRef = useRef(false);
+  const seededRef = useRef(false);
+  const bootedAtRef = useRef(Date.now());
+
+  useEffect(() => {
+    goalsRef.current = goals;
+  }, [goals]);
+
+  useEffect(() => {
+    routingRef.current = routingMode;
+  }, [routingMode]);
+
+  useEffect(() => {
+    nanoRef.current = nano;
+  }, [nano]);
+
+  useEffect(() => {
+    document.documentElement.dataset.theme = theme;
+  }, [theme]);
+
+  /* --- Environment probes ------------------------------------------------ */
+
+  useEffect(() => {
+    let cancelled = false;
+    checkOnDeviceNanoStatus().then((result) => {
+      if (!cancelled) {
+        setNano(result.status);
+        nanoRef.current = result.status;
+      }
+    });
+    const handleOnline = () => setOnline(true);
+    const handleOffline = () => setOnline(false);
+    window.addEventListener('online', handleOnline);
+    window.addEventListener('offline', handleOffline);
+    return () => {
+      cancelled = true;
+      window.removeEventListener('online', handleOnline);
+      window.removeEventListener('offline', handleOffline);
+    };
+  }, []);
+
+  useEffect(() => {
+    if (!listening && !simulating) return;
+    const timer = window.setInterval(() => setElapsed((value) => value + 1), 1000);
+    return () => window.clearInterval(timer);
+  }, [listening, simulating]);
+
+  /* --- Telemetry & audit helpers ---------------------------------------- */
+
+  const applyTelemetry = useCallback((updater: (previous: InferenceTelemetry) => InferenceTelemetry) => {
+    telemetryRef.current = updater(telemetryRef.current);
+    setTelemetry(telemetryRef.current);
+  }, []);
+
+  const pushActivity = useCallback(
+    (source: InferenceSource, operation: string, detail: string, latencyMs: number) => {
+      const entry: ActivityEntry = {
+        id: makeId('log'),
+        at: new Date().toISOString(),
+        source,
+        operation,
+        detail,
+        latencyMs,
+      };
+      setActivity((previous) => [...previous.slice(-59), entry]);
+    },
+    [],
+  );
+
+  const recordCall = useCallback(
+    (source: InferenceSource, latencyMs: number, inputText: string) => {
+      if (latencyMs <= 0) return;
+      const isCloud = source === 'CLOUD_GEMINI' || source === 'CLOUD_FALLBACK';
+      applyTelemetry((previous) =>
+        mergeTelemetry(previous, { data: null, meta: { source, latencyMs, tokens: 0 } }, isCloud ? 'cloud' : 'local', inputText),
+      );
+    },
+    [applyTelemetry],
+  );
+
+  /* --- Live analysis loop ------------------------------------------------ */
+
+  const analyzeTranscript = useCallback(async () => {
+    if (analysisBusyRef.current) {
+      analysisPendingRef.current = true;
+      return;
+    }
+    analysisBusyRef.current = true;
+
+    try {
+      do {
+        analysisPendingRef.current = false;
+        const transcript = buildTranscript(segmentsRef.current);
+        if (!transcript.trim()) break;
+
+        const [goalResult, nudgeResult] = await Promise.all([
+          evaluateLiveGoals(transcript.slice(-6000), goalsRef.current, routingRef.current, nanoRef.current),
+          generateLiveFollowUpNudge(
+            transcript.slice(-2500),
+            goalsRef.current,
+            routingRef.current,
+            nanoRef.current,
+            turnCountRef.current,
+          ),
+        ]);
+
+        recordCall(goalResult.meta.source, goalResult.meta.latencyMs, transcript);
+        recordCall(nudgeResult.meta.source, nudgeResult.meta.latencyMs, transcript);
+
+        if (goalResult.data.updates.length > 0) {
+          setGoals((previous) => {
+            const next = previous.map((goal) => {
+              const update = goalResult.data.updates.find((entry) => entry.id === goal.id);
+              if (!update || update.status === goal.status) return goal;
+              return {
+                ...goal,
+                status: update.status,
+                evidenceSnippet: update.evidenceSnippet ?? goal.evidenceSnippet,
+                updatedBy: goalResult.meta.source === 'CLOUD_GEMINI' || goalResult.meta.source === 'CLOUD_FALLBACK'
+                  ? ('CLOUD_GEMINI' as const)
+                  : ('LOCAL_NANO' as const),
+                latencyMs: goalResult.meta.latencyMs,
+              };
+            });
+            goalsRef.current = next;
+            return next;
+          });
+
+          const snippets = goalResult.data.updates
+            .map((update) => update.evidenceSnippet ?? '')
+            .filter((snippet) => snippet.length > 12);
+
+          if (snippets.length > 0) {
+            setSegments((previous) => {
+              const next = previous.map((segment) => {
+                const matches = snippets.some(
+                  (snippet) => segment.text.includes(snippet.slice(0, 28)) || snippet.includes(segment.text.slice(0, 28)),
+                );
+                if (!matches) return segment;
+                return {
+                  ...segment,
+                  matchedGoalIds: Array.from(new Set([...(segment.matchedGoalIds ?? []), 'evidence'])),
+                };
+              });
+              segmentsRef.current = next;
+              return next;
+            });
+          }
+
+          goalResult.data.updates.forEach((update) => {
+            const index = goalsRef.current.findIndex((goal) => goal.id === update.id);
+            pushActivity(
+              goalResult.meta.source,
+              'GOAL_CHECK',
+              `Goal #${index + 1} ${update.status === 'covered' ? 'covered' : update.status}`,
+              goalResult.meta.latencyMs,
+            );
+          });
+        } else {
+          pushActivity(goalResult.meta.source, 'GOAL_CHECK', 'Goal sweep · no change', goalResult.meta.latencyMs);
+        }
+
+        const nudge = nudgeFromDraft(nudgeResult.data, nudgeResult.meta);
+        if (nudge) {
+          setNudges((previous) =>
+            previous.some((entry) => entry.suggestedQuestion === nudge.suggestedQuestion)
+              ? previous
+              : [nudge, ...previous],
+          );
+          pushActivity(
+            nudgeResult.meta.source,
+            'NUDGE',
+            `Follow-up · ${nudge.triggerType.replace(/_/g, ' ').toLowerCase()}`,
+            nudgeResult.meta.latencyMs,
+          );
+        } else {
+          pushActivity(nudgeResult.meta.source, 'NUDGE', 'Nudge sweep · quiet', nudgeResult.meta.latencyMs);
+        }
+      } while (analysisPendingRef.current);
+    } catch (analysisError) {
+      console.error('[PulseBrief] Analysis loop failed', analysisError);
+    } finally {
+      analysisBusyRef.current = false;
+    }
+  }, [pushActivity, recordCall]);
+
+  /* --- Audio pipeline ---------------------------------------------------- */
+
+  const handleInterim = useCallback((speaker: Speaker, text: string) => {
+    setInterim(text.trim() ? { speaker, text } : null);
+  }, []);
+
+  const handleFinal = useCallback(
+    (speaker: Speaker, text: string) => {
+      const trimmed = text.trim();
+      if (!trimmed) return;
+      setInterim(null);
+
+      const segment: TranscriptSegment = {
+        id: makeId('seg'),
+        speaker,
+        text: trimmed,
+        timestamp: new Date().toISOString(),
+        isFinal: true,
+        containsPii: hasPii(trimmed),
+      };
+
+      segmentsRef.current = [...segmentsRef.current, segment];
+      setSegments(segmentsRef.current);
+      turnCountRef.current += 1;
+      void analyzeTranscript();
+    },
+    [analyzeTranscript],
+  );
+
+  const stopAll = useCallback(() => {
+    recorderRef.current?.stop();
+    recorderRef.current = null;
+    streamerRef.current?.stop();
+    streamerRef.current = null;
+    setListening(false);
+    setSimulating(false);
+    setInterim(null);
+  }, []);
+
+  const resetSession = useCallback(() => {
+    stopAll();
+    segmentsRef.current = [];
+    setSegments([]);
+    setNudges([]);
+    setActivity([]);
+    setInterim(null);
+    telemetryRef.current = createEmptyTelemetry();
+    setTelemetry(telemetryRef.current);
+    turnCountRef.current = 0;
+    setElapsed(0);
+    setBrief(null);
+    setModalOpen(false);
+    setRedactionCount(0);
+    setSyncStatus('SAVING');
+    setPhase('ready');
+    setError(null);
+    setGoals((previous) => {
+      const next = previous.map((goal) => ({
+        ...goal,
+        status: 'pending' as const,
+        evidenceSnippet: undefined,
+        updatedBy: undefined,
+        latencyMs: undefined,
+      }));
+      goalsRef.current = next;
+      return next;
+    });
+  }, [stopAll]);
+
+  const startMic = useCallback(() => {
+    resetSession();
+    if (!isLiveMicSupported()) {
+      setError('This browser has no Web Speech API. Use Chrome or Edge, or run the simulated call.');
+      return;
+    }
+    const recorder = new LiveMicRecorder({
+      onInterim: handleInterim,
+      onFinal: handleFinal,
+      onError: (message) => setError(message),
+      onListeningChange: (value) => setListening(value),
+    });
+    recorderRef.current = recorder;
+    recorder.start();
+  }, [handleFinal, handleInterim, resetSession]);
+
+  const stopMic = useCallback(() => {
+    recorderRef.current?.stop();
+    recorderRef.current = null;
+    setListening(false);
+  }, []);
+
+  const startSimulation = useCallback(() => {
+    resetSession();
+    const streamer = new SimulatedCallStreamer({
+      scenario: getScenario(scenarioId),
+      speed: speedRef.current,
+      onInterim: handleInterim,
+      onFinal: handleFinal,
+      onError: (message) => setError(message),
+      onListeningChange: (value) => setSimulating(value),
+      onComplete: () => {
+        setSimulating(false);
+        setInterim(null);
+      },
+    });
+    streamerRef.current = streamer;
+    streamer.start();
+    setSimulating(true);
+  }, [handleFinal, handleInterim, resetSession, scenarioId]);
+
+  const stopSimulation = useCallback(() => {
+    streamerRef.current?.stop();
+    streamerRef.current = null;
+    setSimulating(false);
+    setInterim(null);
+  }, []);
+
+  const handleSpeedChange = useCallback((value: number) => {
+    setSpeed(value);
+    speedRef.current = value;
+    streamerRef.current?.setSpeed(value);
+  }, []);
+
+  /* --- Post-call pipeline ------------------------------------------------ */
+
+  const handleEndCall = useCallback(async () => {
+    if (synthBusyRef.current) return;
+    if (segmentsRef.current.length === 0) {
+      setError('Nothing to synthesize yet — start the mic or run the simulated call first.');
+      return;
+    }
+
+    synthBusyRef.current = true;
+    stopAll();
+    setModalOpen(true);
+    setPhase('redacting');
+    setBrief(null);
+    setRedactionCount(0);
+    setSyncStatus('SAVING');
+    setError(null);
+
+    try {
+      const fullTranscript = buildTranscript(segmentsRef.current);
+
+      // Step 1 — privacy gate, entirely on-device.
+      const redaction = await redactPiiLocally(fullTranscript, routingRef.current, nanoRef.current);
+      const redactionLocal =
+        redaction.meta.source !== 'CLOUD_GEMINI' && redaction.meta.source !== 'CLOUD_FALLBACK';
+
+      applyTelemetry((previous) => {
+        const merged = mergeTelemetry(
+          previous,
+          { data: null, meta: redaction.meta },
+          redactionLocal ? 'local' : 'cloud',
+          fullTranscript,
+        );
+        return {
+          ...merged,
+          piiEntitiesRedactedLocally: previous.piiEntitiesRedactedLocally + redaction.data.redactionCount,
+        };
+      });
+      setRedactionCount(redaction.data.redactionCount);
+      pushActivity(
+        redaction.meta.source,
+        'PII_GATE',
+        `PII masked · ${redaction.data.redactionCount} entities`,
+        redaction.meta.latencyMs,
+      );
+
+      if (!CAPTURE_MODE) await sleep(650);
+      setPhase('cloud');
+
+      // Step 2 — cloud synthesis, sanitized text only.
+      const synthesis = await synthesizePostCallBrief(
+        redaction.data.sanitizedTranscript,
+        goalsRef.current,
+        telemetryRef.current,
+        {
+          company: scenario.company,
+          contact: scenario.contact,
+          role: scenario.role,
+          rawTranscript: fullTranscript,
+          redactionCount: redaction.data.redactionCount,
+        },
+      );
+
+      recordCall(synthesis.meta.source, synthesis.meta.latencyMs, redaction.data.sanitizedTranscript);
+      pushActivity(
+        synthesis.meta.source,
+        'SYNTHESIS',
+        `Brief synthesized · ${Math.round(redaction.data.sanitizedTranscript.length / 4)} tokens in`,
+        synthesis.meta.latencyMs,
+      );
+
+      const draft: PostCallBrief = {
+        ...synthesis.data,
+        telemetry: telemetryRef.current,
+        syncStatus: 'SAVING',
+      };
+      setBrief(draft);
+      setPhase('ready');
+
+      const persisted = await saveSession(draft);
+      setSyncStatus(persisted);
+      setBrief((previous) => (previous ? { ...previous, syncStatus: persisted } : previous));
+    } catch (synthesisError) {
+      console.error('[PulseBrief] Post-call pipeline failed', synthesisError);
+      setError('The synthesis pipeline failed. Check the console, then try again.');
+      setModalOpen(false);
+      setPhase('ready');
+    } finally {
+      synthBusyRef.current = false;
+    }
+  }, [applyTelemetry, pushActivity, recordCall, scenario, stopAll]);
+
+  const endCallRef = useRef(handleEndCall);
+  endCallRef.current = handleEndCall;
+
+  /* --- Goal editing ------------------------------------------------------ */
+
+  const handleUpdateGoal = useCallback((goalId: string, text: string) => {
+    setGoals((previous) => {
+      const next = previous.map((goal) =>
+        goal.id === goalId
+          ? { ...goal, text, status: 'pending' as const, evidenceSnippet: undefined, updatedBy: undefined, latencyMs: undefined }
+          : goal,
+      );
+      goalsRef.current = next;
+      return next;
+    });
+  }, []);
+
+  const handleAddGoal = useCallback(() => {
+    const goal: SessionGoal = {
+      id: makeId('goal'),
+      text: 'New goal — click the text to edit',
+      status: 'pending',
+    };
+    setGoals((previous) => {
+      const next = [...previous, goal];
+      goalsRef.current = next;
+      return next;
+    });
+  }, []);
+
+  const handleDeleteGoal = useCallback((goalId: string) => {
+    setGoals((previous) => {
+      const next = previous.filter((goal) => goal.id !== goalId);
+      goalsRef.current = next;
+      return next;
+    });
+  }, []);
+
+  const handleToggleGoal = useCallback((goalId: string) => {
+    setGoals((previous) => {
+      const next = previous.map((goal) =>
+        goal.id === goalId
+          ? {
+              ...goal,
+              status: goal.status === 'covered' ? ('pending' as const) : ('covered' as const),
+              evidenceSnippet: goal.status === 'covered' ? undefined : 'Manually marked covered by the interviewer.',
+              updatedBy: goal.status === 'covered' ? undefined : ('LOCAL_NANO' as const),
+            }
+          : goal,
+      );
+      goalsRef.current = next;
+      return next;
+    });
+  }, []);
+
+  const handleResetGoals = useCallback(() => {
+    const next = seedGoals(getScenario(scenarioId));
+    goalsRef.current = next;
+    setGoals(next);
+  }, [scenarioId]);
+
+  const handleScenarioChange = useCallback(
+    (nextScenarioId: string) => {
+      resetSession();
+      setScenarioId(nextScenarioId);
+      const next = seedGoals(getScenario(nextScenarioId));
+      goalsRef.current = next;
+      setGoals(next);
+    },
+    [resetSession],
+  );
+
+  const handleRoutingMode = useCallback((mode: RoutingMode) => {
+    setRoutingMode(mode);
+    routingRef.current = mode;
+  }, []);
+
+  const handleNudgeDismiss = useCallback((nudgeId: string) => {
+    setNudges((previous) => previous.map((nudge) => (nudge.id === nudgeId ? { ...nudge, dismissed: true } : nudge)));
+  }, []);
+
+  const handleNudgeAsked = useCallback((nudgeId: string) => {
+    setNudges((previous) => previous.map((nudge) => (nudge.id === nudgeId ? { ...nudge, asked: true } : nudge)));
+  }, []);
+
+  /* --- Judge deep links (?seed=1&brief=1) -------------------------------- */
+
+  useEffect(() => {
+    const params = new URLSearchParams(window.location.search);
+    const wantsSeed = params.get('seed') === '1' || params.get('demo') === '1';
+    if (!wantsSeed || seededRef.current) return;
+    seededRef.current = true;
+
+    const demoScenario = getScenario(INITIAL_SCENARIO_ID);
+    const demoGoals = seedGoals(demoScenario);
+    goalsRef.current = demoGoals;
+    setGoals(demoGoals);
+
+    const now = Date.now();
+    const seededSegments: TranscriptSegment[] = demoScenario.lines.map((line, index) => ({
+      id: `seed_${index}`,
+      speaker: line.speaker,
+      text: line.text,
+      timestamp: new Date(now - (demoScenario.lines.length - index) * 11000).toISOString(),
+      isFinal: true,
+      containsPii: hasPii(line.text),
+    }));
+
+    segmentsRef.current = seededSegments;
+    setSegments(seededSegments);
+    turnCountRef.current = Math.max(1, seededSegments.length - 1);
+    setElapsed(seededSegments.length * 11);
+
+    if (CAPTURE_MODE && params.get('brief') === '1') {
+      window.setTimeout(() => {
+        void endCallRef.current();
+      }, 1400);
+    }
+
+    void (async () => {
+      await analyzeTranscript();
+
+      // Replay the hedged turn from the middle of the call so the co-pilot feed
+      // is populated exactly as it would have been mid-conversation.
+      const hedgeWindow = demoScenario.lines
+        .slice(0, 10)
+        .map((line) => `${line.speaker}: ${line.text}`)
+        .join('\n');
+      const nudgeResult = await generateLiveFollowUpNudge(
+        hedgeWindow,
+        goalsRef.current,
+        routingRef.current,
+        nanoRef.current,
+        9,
+      );
+      const nudge = nudgeFromDraft(nudgeResult.data, nudgeResult.meta);
+      if (nudge) {
+        setNudges((previous) =>
+          previous.some((entry) => entry.suggestedQuestion === nudge.suggestedQuestion)
+            ? previous
+            : [nudge, ...previous],
+        );
+        pushActivity(
+          nudgeResult.meta.source,
+          'NUDGE',
+          `Follow-up · ${nudge.triggerType.replace(/_/g, ' ').toLowerCase()}`,
+          nudgeResult.meta.latencyMs,
+        );
+        recordCall(nudgeResult.meta.source, nudgeResult.meta.latencyMs, hedgeWindow);
+      }
+
+      if (!CAPTURE_MODE && params.get('brief') === '1') {
+        window.setTimeout(() => {
+          void endCallRef.current();
+        }, 500);
+      }
+    })();
+  }, [analyzeTranscript, pushActivity, recordCall]);
+
+  useEffect(() => () => stopAll(), [stopAll]);
+
+  const demoMode = isDemoEngine;
+  const localActive = !online || nano === 'AVAILABLE' || demoMode;
+  const micSupported = isLiveMicSupported();
+  const scriptedSeconds = scenarioDurationSeconds(scenario, speed);
+
+  return (
+    <div className={styles.shell}>
+      <TopBar
+        routingMode={routingMode}
+        onRoutingModeChange={handleRoutingMode}
+        telemetry={telemetry}
+        nanoStatus={nano}
+        online={online}
+        simulated={demoMode}
+        cloudReady={isCloudReady()}
+        theme={theme}
+        onToggleTheme={() => setTheme((value) => (value === 'dark' ? 'light' : 'dark'))}
+      />
+
+      <main className={styles.workspace}>
+        <GoalSidebar
+          goals={goals}
+          scenarioId={scenarioId}
+          onScenarioChange={handleScenarioChange}
+          onUpdateGoal={handleUpdateGoal}
+          onAddGoal={handleAddGoal}
+          onDeleteGoal={handleDeleteGoal}
+          onReset={handleResetGoals}
+          onToggleGoal={handleToggleGoal}
+        />
+
+        <LiveTranscript
+          segments={segments}
+          interim={interim}
+          onStartMic={startMic}
+          onStopMic={stopMic}
+          onSimulate={startSimulation}
+          onStopSimulation={stopSimulation}
+          onEndCall={handleEndCall}
+          onSpeedChange={handleSpeedChange}
+          speed={speed}
+          listening={listening}
+          simulating={simulating}
+          micSupported={micSupported}
+          canSynthesize={segments.length > 0}
+          synthesizing={phase === 'redacting' || phase === 'cloud'}
+          elapsedLabel={formatElapsed(elapsed)}
+          sessionTitle={scenario.company}
+          sessionMeta={`${scenario.contact} · ${scenario.role}`}
+          scriptedSeconds={scriptedSeconds}
+          error={error}
+          onDismissError={() => setError(null)}
+        />
+
+        <CoPilotFeed
+          nudges={nudges}
+          activity={activity}
+          onDismiss={handleNudgeDismiss}
+          onMarkAsked={handleNudgeAsked}
+          active={listening || simulating}
+          localActive={localActive}
+        />
+      </main>
+
+      <PostCallBriefModal
+        open={modalOpen}
+        phase={phase}
+        brief={brief}
+        redactionCount={redactionCount}
+        syncStatus={syncStatus}
+        onClose={() => setModalOpen(false)}
+      />
+
+      <p className={styles.bootNote} aria-hidden="true">
+        booted {new Date(bootedAtRef.current).toLocaleDateString('en-US')} · engine {demoMode ? 'local-sim' : 'firebase-ai'}
+      </p>
+    </div>
+  );
+}

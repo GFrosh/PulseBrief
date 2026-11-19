@@ -1,0 +1,233 @@
+.receipt {
+  position: relative;
+  border-radius: var(--radius-lg);
+  border: 1px solid var(--border);
+  background:
+    radial-gradient(600px 200px at 100% 0%, rgba(99, 102, 241, 0.09), transparent 70%),
+    var(--surface-inset);
+  padding: 16px 16px 12px;
+  overflow: hidden;
+}
+
+.receipt::before {
+  content: '';
+  position: absolute;
+  inset: 0;
+  background-image: repeating-linear-gradient(
+    0deg,
+    transparent,
+    transparent 21px,
+    rgba(255, 255, 255, 0.018) 21px,
+    rgba(255, 255, 255, 0.018) 22px
+  );
+  pointer-events: none;
+}
+
+.head {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
+  position: relative;
+}
+
+.headLeft {
+  display: flex;
+  gap: 9px;
+  align-items: flex-start;
+}
+
+.logo {
+  display: grid;
+  place-items: center;
+  width: 26px;
+  height: 26px;
+  border-radius: 7px;
+  color: var(--color-local);
+  background: var(--color-local-soft);
+  border: 1px solid var(--color-local-line);
+  flex-shrink: 0;
+}
+
+.title {
+  font-size: var(--text-sm);
+  font-weight: 650;
+  letter-spacing: -0.01em;
+}
+
+.subtitle {
+  font-size: 10px;
+  color: var(--text-tertiary);
+  margin-top: 1px;
+}
+
+.sync {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  padding: 4px 8px;
+  border-radius: var(--radius-pill);
+  font-size: 9.5px;
+  font-weight: 600;
+  border: 1px solid var(--border-strong);
+  color: var(--text-secondary);
+  background: var(--surface-2);
+  white-space: nowrap;
+}
+
+.sync_SYNCED {
+  color: var(--color-local);
+  background: var(--color-local-soft);
+  border-color: var(--color-local-line);
+}
+
+.sync_QUEUED_OFFLINE {
+  color: var(--color-offline);
+  background: var(--color-offline-soft);
+  border-color: rgba(249, 115, 22, 0.35);
+}
+
+.sync_LOCAL_ONLY {
+  color: var(--text-secondary);
+}
+
+.sync_SAVING {
+  color: var(--color-cloud);
+  background: var(--color-cloud-soft);
+  border-color: var(--color-cloud-line);
+}
+
+.splitBar {
+  display: flex;
+  gap: 2px;
+  height: 6px;
+  margin-top: 14px;
+  border-radius: var(--radius-pill);
+  overflow: hidden;
+  background: var(--surface-3);
+  position: relative;
+}
+
+.splitLocal {
+  height: 100%;
+  background: linear-gradient(90deg, #059669, var(--color-local));
+  border-radius: var(--radius-pill);
+  transition: width var(--dur-slow) var(--ease-out);
+}
+
+.splitCloud {
+  height: 100%;
+  background: linear-gradient(90deg, var(--color-cloud), #8b5cf6);
+  border-radius: var(--radius-pill);
+  transition: width var(--dur-slow) var(--ease-out);
+}
+
+.splitLegend {
+  display: flex;
+  gap: 14px;
+  margin-top: 5px;
+  font-family: var(--font-mono);
+  font-size: 8.5px;
+  color: var(--text-tertiary);
+  position: relative;
+}
+
+.splitLegend span {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+}
+
+.legendLocal,
+.legendCloud {
+  width: 5px;
+  height: 5px;
+  border-radius: 1px;
+}
+
+.legendLocal {
+  background: var(--color-local);
+}
+
+.legendCloud {
+  background: var(--color-cloud);
+}
+
+.rows {
+  display: flex;
+  flex-direction: column;
+  margin-top: 12px;
+  position: relative;
+}
+
+.row {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 14px;
+  padding: 6px 0;
+  border-bottom: 1px dashed var(--border);
+  font-size: 10.5px;
+}
+
+.row:last-child {
+  border-bottom: none;
+}
+
+.row dt {
+  color: var(--text-tertiary);
+  font-size: 10px;
+}
+
+.row dd {
+  margin: 0;
+  color: var(--text-secondary);
+  font-family: var(--font-mono);
+  font-size: 10px;
+  text-align: right;
+  white-space: nowrap;
+}
+
+.row dd strong {
+  color: var(--text);
+  font-weight: 600;
+  font-size: 11px;
+}
+
+.muted {
+  color: var(--text-tertiary);
+  font-size: 9px;
+}
+
+.rowAmber dd strong {
+  color: var(--color-redacted);
+}
+
+.mono {
+  letter-spacing: -0.02em;
+  font-size: 9px !important;
+  color: var(--color-cloud) !important;
+}
+
+.foot {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex-wrap: wrap;
+  margin-top: 10px;
+  padding-top: 8px;
+  border-top: 1px dashed var(--border);
+  font-family: var(--font-mono);
+  font-size: 8px;
+  color: var(--text-tertiary);
+  letter-spacing: -0.01em;
+  position: relative;
+}
+
+.footDivider {
+  width: 2px;
+  height: 2px;
+  border-radius: 50%;
+  background: currentColor;
+  opacity: 0.6;
+}

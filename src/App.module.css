@@ -1,0 +1,44 @@
+.shell {
+  display: flex;
+  flex-direction: column;
+  height: 100dvh;
+  width: 100%;
+  overflow: hidden;
+}
+
+.workspace {
+  flex: 1;
+  min-height: 0;
+  display: grid;
+  grid-template-columns: var(--sidebar-width) minmax(0, 1fr) var(--feed-width);
+  overflow: hidden;
+}
+
+.bootNote {
+  position: fixed;
+  right: 10px;
+  bottom: 6px;
+  font-family: var(--font-mono);
+  font-size: 8px;
+  color: var(--text-tertiary);
+  opacity: 0.45;
+  pointer-events: none;
+  z-index: 1;
+}
+
+@media (max-width: 1080px) {
+  .workspace {
+    display: flex;
+    flex-direction: column;
+    overflow-y: auto;
+    overscroll-behavior: contain;
+  }
+
+  .workspace > * {
+    flex-shrink: 0;
+  }
+
+  .bootNote {
+    display: none;
+  }
+}
