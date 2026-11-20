@@ -1,4 +1,4 @@
-import { initializeApp, getApp, getApps, type FirebaseApp } from 'firebase/app';
+import { FirebaseError, initializeApp, getApp, getApps, type FirebaseApp } from 'firebase/app';
 import {
   GoogleAuthProvider,
   createUserWithEmailAndPassword,
@@ -7,6 +7,7 @@ import {
   onAuthStateChanged,
   signInAnonymously,
   signInWithEmailAndPassword,
+  signInWithCredential,
   signInWithPopup,
   signOut,
   type Auth,

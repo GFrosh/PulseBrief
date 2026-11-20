@@ -99,12 +99,13 @@ export async function listSessions(ownerUid?: string): Promise<StoredSession[]> 
         const data = entry.data() as { savedAt?: string; brief?: PostCallBrief; ownerUid?: string };
         if (!data.brief) return null;
         if (ownerUid && data.ownerUid && data.ownerUid !== ownerUid) return null;
-        return {
+        const session: StoredSession = {
           id: entry.id,
           savedAt: data.savedAt ?? data.brief.createdAt,
           ownerUid: data.ownerUid,
           brief: data.brief,
         };
+        return session;
       })
       .filter((entry): entry is StoredSession => entry !== null);
 
