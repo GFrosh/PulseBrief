@@ -3,6 +3,7 @@ import {
   GoogleAuthProvider,
   createUserWithEmailAndPassword,
   getAuth,
+  linkWithPopup,
   onAuthStateChanged,
   signInAnonymously,
   signInWithEmailAndPassword,
@@ -249,6 +250,57 @@ export function watchAuthSession(callback: (session: AuthSession) => void): () =
 
 export function watchAuth(callback: (uid: string | null) => void): () => void {
   return watchAuthSession((session) => callback(session.uid));
+}
+
+export interface AuthUserInfo {
+  uid: string;
+  isAnonymous: boolean;
+  name: string | null;
+}
+
+/** Richer auth state for the sign-in button. `null` means signed out (or no Firebase). */
+export function watchAuthUser(callback: (user: AuthUserInfo | null) => void): () => void {
+  if (!auth) {
+    callback(null);
+    return () => undefined;
+  }
+  return onAuthStateChanged(auth, (user) =>
+    callback(user ? { uid: user.uid, isAnonymous: user.isAnonymous, name: user.displayName } : null),
+  );
+}
+
+/**
+ * Google sign-in. A guest (anonymous) user is upgraded in place, so sessions
+ * saved as a guest stay with the same uid. If that Google account already has
+ * its own data, we switch to it instead.
+ */
+export async function signInWithGoogle(): Promise<void> {
+  if (!auth) throw new Error('Firebase is not configured');
+  const provider = new GoogleAuthProvider();
+  const current = auth.currentUser;
+
+  if (current?.isAnonymous) {
+    try {
+      await linkWithPopup(current, provider);
+      return;
+    } catch (error) {
+      if ((error as FirebaseError).code === 'auth/credential-already-in-use') {
+        const credential = GoogleAuthProvider.credentialFromError(error as FirebaseError);
+        if (credential) {
+          await signInWithCredential(auth, credential);
+          return;
+        }
+      }
+      throw error;
+    }
+  }
+
+  await signInWithPopup(auth, provider);
+}
+
+export async function signOutUser(): Promise<void> {
+  if (!auth) return;
+  await signOut(auth);
 }
 
 export const firebaseMeta = {

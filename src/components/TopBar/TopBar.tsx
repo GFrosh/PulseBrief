@@ -1,6 +1,7 @@
 import type { InferenceTelemetry, NanoAvailability, RoutingMode } from '../../types/session';
 import type { AuthSession } from '../../config/firebase';
 import { averageLocalLatency } from '../../services/hybridAI';
+import AuthButton from '../AuthButton/AuthButton';
 import styles from './TopBar.module.css';
 
 interface TopBarProps {
@@ -45,7 +46,7 @@ function resolvePill(
   if (routingMode === 'FORCE_CLOUD') {
     return {
       tone: 'cloud',
-      label: simulated ? 'Simulated Cloud Mode' : 'Cloud Forced: Gemini 2.5 Pro',
+      label: simulated ? 'Simulated Cloud Mode' : 'Cloud Forced: Gemini 3.8 flash',
       detail: 'Every call is routed to Cloud Gemini via Firebase AI Logic.',
     };
   }
@@ -93,7 +94,7 @@ function resolvePill(
   }
   return {
     tone: 'cloud',
-    label: 'Cloud Fallback: Gemini 2.5',
+    label: 'Cloud Fallback: Gemini 3.8 Flash',
     detail: 'On-device model unavailable on this computer. Requests route to Cloud Gemini.',
   };
 }
@@ -199,6 +200,8 @@ export default function TopBar({
             <span className={styles.telemetryUnit}>cloud</span>
           </span>
         </div>
+
+        <AuthButton />
 
         <button
           type="button"

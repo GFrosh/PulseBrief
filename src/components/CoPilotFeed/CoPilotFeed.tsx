@@ -116,11 +116,15 @@ function NudgeCard({
           <svg viewBox="0 0 12 12" width="9" height="9" aria-hidden="true">
             <path d="M6.8 1 2.4 7h2.4L5 11l4.6-6.4H7.2L6.8 1Z" fill="currentColor" />
           </svg>
-          Local Nano · {nudge.latencyMs}ms
+          {nudge.source === 'DEMO_ENGINE' ? 'Backup engine' : nudge.source === 'LOCAL_NANO' ? 'Local Nano' : 'Cloud Gemini'} · {nudge.latencyMs}ms
         </span>
         <span className={styles.privacyDivider} aria-hidden="true" />
         <span className={styles.privacyNote}>
-          {nudge.source === 'LOCAL_NANO' ? 'Text evaluated on-device' : 'Cloud fallback used'}
+          {nudge.source === 'LOCAL_NANO'
+            ? 'Answered on this device'
+            : nudge.source === 'DEMO_ENGINE'
+              ? 'Built in backup, not Gemini'
+              : 'Answered in the cloud'}
         </span>
       </div>
 
