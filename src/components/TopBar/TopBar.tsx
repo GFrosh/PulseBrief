@@ -1,4 +1,5 @@
 import type { InferenceTelemetry, NanoAvailability, RoutingMode } from '../../types/session';
+import type { AuthSession } from '../../config/firebase';
 import { averageLocalLatency } from '../../services/hybridAI';
 import AuthButton from '../AuthButton/AuthButton';
 import styles from './TopBar.module.css';
@@ -13,6 +14,10 @@ interface TopBarProps {
   cloudReady: boolean;
   theme: 'dark' | 'light';
   onToggleTheme: () => void;
+  authSession: AuthSession;
+  savedCount: number;
+  onOpenHistory: () => void;
+  onOpenAccount: () => void;
 }
 
 const ROUTING_OPTIONS: Array<{ value: RoutingMode; label: string; short: string }> = [
@@ -29,35 +34,48 @@ function resolvePill(
   nanoStatus: NanoAvailability,
   simulated: boolean,
 ): { tone: PillTone; label: string; detail: string } {
+  const realNanoReady = !simulated && nanoStatus === 'AVAILABLE';
+
   if (!online) {
     return {
       tone: 'offline',
-      label: 'Offline Mode — Local Nano Active',
+      label: realNanoReady ? 'Offline — Local Nano Active' : 'Offline Mode',
       detail: 'Network lost. Inference stays on this device; sessions queue in IndexedDB.',
     };
   }
   if (routingMode === 'FORCE_CLOUD') {
     return {
       tone: 'cloud',
-      label: 'Cloud Forced: Gemini 3.8 Flash',
+      label: simulated ? 'Simulated Cloud Mode' : 'Cloud Forced: Gemini 3.8 flash',
       detail: 'Every call is routed to Cloud Gemini via Firebase AI Logic.',
     };
   }
   if (routingMode === 'FORCE_LOCAL') {
+    if (realNanoReady) {
+      return {
+        tone: 'local',
+        label: 'On-Device Forced: Gemini Nano',
+        detail: 'Only the on-device model may answer. Cloud calls are disabled.',
+      };
+    }
+    if (simulated) {
+      return {
+        tone: 'demo',
+        label: 'Simulated Local Mode',
+        detail: 'Running local demo engine with cloud calls disabled.',
+      };
+    }
     return {
-      tone: nanoStatus === 'AVAILABLE' ? 'local' : 'pending',
-      label:
-        nanoStatus === 'AVAILABLE'
-          ? 'On-Device Forced: Gemini Nano 4'
-          : 'Local Forced — waiting for Nano',
-      detail: 'Only the on-device model may answer. Cloud calls are disabled.',
+      tone: 'pending',
+      label: 'Local Forced — Nano unavailable',
+      detail: 'On-device Gemini Nano is not ready on this machine. Switch to Auto Hybrid for cloud fallback.',
     };
   }
-  if (nanoStatus === 'AVAILABLE') {
+  if (realNanoReady) {
     return {
       tone: 'local',
-      label: 'On-Device: Gemini Nano 4 Active',
-      detail: 'Goal tracking, nudges and PII masking run in the browser.',
+      label: 'On-Device: Gemini Nano Active',
+      detail: 'Real Gemini Nano is running in Chrome for goal tracking, nudges, and PII masking.',
     };
   }
   if (nanoStatus === 'DOWNLOADING') {
@@ -70,14 +88,14 @@ function resolvePill(
   if (simulated) {
     return {
       tone: 'demo',
-      label: 'Simulated Nano — demo engine',
-      detail: 'No Firebase project configured. A deterministic local engine drives the hybrid flow.',
+      label: 'Demo Engine — simulated',
+      detail: 'Demo engine active. Connect Firebase AI Logic + Chrome Gemini Nano for live inference.',
     };
   }
   return {
     tone: 'cloud',
     label: 'Cloud Fallback: Gemini 3.8 Flash',
-    detail: 'This browser has no on-device model. Requests route to Cloud Gemini.',
+    detail: 'On-device model unavailable on this computer. Requests route to Cloud Gemini.',
   };
 }
 
@@ -91,9 +109,14 @@ export default function TopBar({
   cloudReady,
   theme,
   onToggleTheme,
+  authSession,
+  savedCount,
+  onOpenHistory,
+  onOpenAccount,
 }: TopBarProps) {
   const pill = resolvePill(online, routingMode, nanoStatus, simulated);
   const avgLocal = averageLocalLatency(telemetry.localLatenciesMs);
+  const isSignedIn = !authSession.isAnonymous;
 
   return (
     <header className={styles.topbar}>
@@ -179,6 +202,32 @@ export default function TopBar({
         </div>
 
         <AuthButton />
+
+        <button
+          type="button"
+          className={styles.navAction}
+          onClick={onOpenHistory}
+          title="View saved call briefs"
+        >
+          <svg viewBox="0 0 16 16" width="13" height="13" aria-hidden="true">
+            <path d="M3 4.5h10M3 8h10M3 11.5h6" fill="none" stroke="currentColor" strokeWidth="1.4" strokeLinecap="round" />
+          </svg>
+          <span className={styles.navActionLabel}>Saved</span>
+          {savedCount > 0 && <span className={styles.navBadge}>{savedCount}</span>}
+        </button>
+
+        <button
+          type="button"
+          className={`${styles.navAction} ${isSignedIn ? styles.navActionSignedIn : ''}`}
+          onClick={onOpenAccount}
+          title={isSignedIn ? `Signed in as ${authSession.email ?? authSession.displayName}` : 'Sign in to sync your saved calls'}
+        >
+          <svg viewBox="0 0 16 16" width="13" height="13" aria-hidden="true">
+            <circle cx="8" cy="5.5" r="2.6" fill="none" stroke="currentColor" strokeWidth="1.3" />
+            <path d="M3.2 13.4a4.8 4.8 0 0 1 9.6 0" fill="none" stroke="currentColor" strokeWidth="1.3" strokeLinecap="round" />
+          </svg>
+          <span className={styles.navActionLabel}>{isSignedIn ? authSession.displayName : 'Sign in'}</span>
+        </button>
 
         <button
           type="button"

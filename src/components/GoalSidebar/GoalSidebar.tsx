@@ -231,8 +231,8 @@ export default function GoalSidebar({
           <path d="M5.6 7V5.4a2.4 2.4 0 0 1 4.8 0V7" fill="none" stroke="currentColor" strokeWidth="1.3" strokeLinecap="round" />
         </svg>
         <p>
-          <strong>Only masked text reaches the cloud model.</strong> PulseBrief never records or stores
-          your audio, and private details are hidden on this device first.
+          <strong>PulseBrief never stores audio.</strong> Only text goes to AI models — and PII is
+          masked before cloud steps.
         </p>
       </div>
     </aside>

@@ -4,6 +4,8 @@ import GoalSidebar from './components/GoalSidebar/GoalSidebar';
 import LiveTranscript from './components/LiveTranscript/LiveTranscript';
 import CoPilotFeed from './components/CoPilotFeed/CoPilotFeed';
 import PostCallBriefModal from './components/PostCallBriefModal/PostCallBriefModal';
+import RuntimeStatusBanner from './components/RuntimeStatusBanner/RuntimeStatusBanner';
+import AccountAndHistoryModal from './components/AccountAndHistoryModal/AccountAndHistoryModal';
 import type {
   ActivityEntry,
   CoPilotNudge,
@@ -38,10 +40,12 @@ import {
   redactPiiLocally,
   synthesizePostCallBrief,
 } from './services/hybridAI';
-import { saveSession } from './services/sessionStore';
+import { listLocalSessions, listSessions, saveSession } from './services/sessionStore';
+import { getGuestId, watchAuthSession, type AuthSession } from './config/firebase';
 import styles from './App.module.css';
 
 type ModalPhase = 'ready' | 'redacting' | 'cloud';
+type MobilePane = 'transcript' | 'goals' | 'copilot';
 
 const makeId = (prefix: string): string =>
   `${prefix}_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 7)}`;
@@ -71,7 +75,12 @@ const CAPTURE_MODE =
 export default function App() {
   const initialScenario = getScenario(INITIAL_SCENARIO_ID);
 
-  const [theme, setTheme] = useState<'dark' | 'light'>('dark');
+  const [mobilePane, setMobilePane] = useState<MobilePane>('transcript');
+  const [theme, setTheme] = useState<'dark' | 'light'>(() => {
+    const saved = window.localStorage.getItem('pulsebrief-theme');
+    if (saved === 'dark' || saved === 'light') return saved;
+    return window.matchMedia('(prefers-color-scheme: light)').matches ? 'light' : 'dark';
+  });
   const [scenarioId, setScenarioId] = useState<string>(INITIAL_SCENARIO_ID);
   const [goals, setGoals] = useState<SessionGoal[]>(() => seedGoals(initialScenario));
   const [segments, setSegments] = useState<TranscriptSegment[]>([]);
@@ -81,7 +90,19 @@ export default function App() {
   const [telemetry, setTelemetry] = useState<InferenceTelemetry>(() => createEmptyTelemetry());
   const [routingMode, setRoutingMode] = useState<RoutingMode>('AUTO_HYBRID');
   const [nano, setNano] = useState<NanoAvailability>('CHECKING');
+  const [nanoDetail, setNanoDetail] = useState<string>('');
   const [online, setOnline] = useState<boolean>(() => navigator.onLine);
+  const [dismissedBanner, setDismissedBanner] = useState<string | null>(null);
+  const [authSession, setAuthSession] = useState<AuthSession>(() => ({
+    uid: getGuestId(),
+    email: null,
+    displayName: 'Local Guest',
+    isAnonymous: true,
+    isGuest: true,
+  }));
+  const [savedCount, setSavedCount] = useState<number>(() => listLocalSessions().length);
+  const [accountModalOpen, setAccountModalOpen] = useState(false);
+  const [accountModalTab, setAccountModalTab] = useState<'account' | 'history'>('history');
   const [listening, setListening] = useState(false);
   const [simulating, setSimulating] = useState(false);
   const [speed, setSpeed] = useState(1);
@@ -124,26 +145,52 @@ export default function App() {
 
   useEffect(() => {
     document.documentElement.dataset.theme = theme;
+    window.localStorage.setItem('pulsebrief-theme', theme);
   }, [theme]);
 
   /* --- Environment probes ------------------------------------------------ */
+
+  const refreshNanoStatus = useCallback(() => {
+    checkOnDeviceNanoStatus().then((result) => {
+      setNano(result.status);
+      setNanoDetail(result.detail);
+      nanoRef.current = result.status;
+      setDismissedBanner(null);
+    });
+  }, []);
 
   useEffect(() => {
     let cancelled = false;
     checkOnDeviceNanoStatus().then((result) => {
       if (!cancelled) {
         setNano(result.status);
+        setNanoDetail(result.detail);
         nanoRef.current = result.status;
       }
     });
-    const handleOnline = () => setOnline(true);
-    const handleOffline = () => setOnline(false);
+    const handleOnline = () => {
+      setOnline(true);
+      setDismissedBanner(null);
+    };
+    const handleOffline = () => {
+      setOnline(false);
+      setDismissedBanner(null);
+    };
     window.addEventListener('online', handleOnline);
     window.addEventListener('offline', handleOffline);
+    const unsubAuth = watchAuthSession((nextSession) => {
+      if (!cancelled) {
+        setAuthSession(nextSession);
+        listSessions(nextSession.uid).then((items) => {
+          if (!cancelled) setSavedCount(items.length);
+        });
+      }
+    });
     return () => {
       cancelled = true;
       window.removeEventListener('online', handleOnline);
       window.removeEventListener('offline', handleOffline);
+      unsubAuth();
     };
   }, []);
 
@@ -494,9 +541,11 @@ export default function App() {
       setBrief(draft);
       setPhase('ready');
 
-      const persisted = await saveSession(draft);
+      const persisted = await saveSession(draft, authSession.uid);
       setSyncStatus(persisted);
       setBrief((previous) => (previous ? { ...previous, syncStatus: persisted } : previous));
+      const updatedList = await listSessions(authSession.uid);
+      setSavedCount(updatedList.length);
     } catch (synthesisError) {
       console.error('[PulseBrief] Post-call pipeline failed', synthesisError);
       setError('The synthesis pipeline failed. Check the console, then try again.');
@@ -505,7 +554,7 @@ export default function App() {
     } finally {
       synthBusyRef.current = false;
     }
-  }, [applyTelemetry, pushActivity, recordCall, scenario, stopAll]);
+  }, [applyTelemetry, authSession.uid, pushActivity, recordCall, scenario, stopAll]);
 
   const endCallRef = useRef(handleEndCall);
   endCallRef.current = handleEndCall;
@@ -668,8 +717,10 @@ export default function App() {
 
   useEffect(() => () => stopAll(), [stopAll]);
 
+  const coveredCount = goals.filter((goal) => goal.status === 'covered').length;
+  const activeNudgeCount = nudges.filter((nudge) => !nudge.dismissed).length;
   const demoMode = isDemoEngine;
-  const localActive = !online || nano === 'AVAILABLE' || demoMode;
+  const localActive = (!demoMode && nano === 'AVAILABLE') || (!online && demoMode);
   const micSupported = isLiveMicSupported();
   const scriptedSeconds = scenarioDurationSeconds(scenario, speed);
 
@@ -685,51 +736,111 @@ export default function App() {
         cloudReady={isCloudReady()}
         theme={theme}
         onToggleTheme={() => setTheme((value) => (value === 'dark' ? 'light' : 'dark'))}
+        authSession={authSession}
+        savedCount={savedCount}
+        onOpenHistory={() => {
+          setAccountModalTab('history');
+          setAccountModalOpen(true);
+        }}
+        onOpenAccount={() => {
+          setAccountModalTab('account');
+          setAccountModalOpen(true);
+        }}
       />
 
+      <RuntimeStatusBanner
+        online={online}
+        nanoStatus={nano}
+        nanoDetail={nanoDetail}
+        routingMode={routingMode}
+        simulated={demoMode}
+        onRetryCheck={refreshNanoStatus}
+        onSwitchToCloud={() => handleRoutingMode('AUTO_HYBRID')}
+        dismissedKey={dismissedBanner}
+        onDismiss={(key) => setDismissedBanner(key)}
+      />
+
+      <nav className={styles.mobileNav} aria-label="Workspace views">
+        <button
+          type="button"
+          className={`${styles.mobileTab} ${mobilePane === 'transcript' ? styles.mobileTabActive : ''}`}
+          aria-pressed={mobilePane === 'transcript'}
+          onClick={() => setMobilePane('transcript')}
+        >
+          <span>Transcript</span>
+          {segments.length > 0 && <span className={styles.mobileBadge}>{segments.length}</span>}
+        </button>
+        <button
+          type="button"
+          className={`${styles.mobileTab} ${mobilePane === 'goals' ? styles.mobileTabActive : ''}`}
+          aria-pressed={mobilePane === 'goals'}
+          onClick={() => setMobilePane('goals')}
+        >
+          <span>Goals</span>
+          <span className={styles.mobileBadge}>
+            {coveredCount}/{goals.length}
+          </span>
+        </button>
+        <button
+          type="button"
+          className={`${styles.mobileTab} ${mobilePane === 'copilot' ? styles.mobileTabActive : ''}`}
+          aria-pressed={mobilePane === 'copilot'}
+          onClick={() => setMobilePane('copilot')}
+        >
+          <span>Co-pilot</span>
+          {activeNudgeCount > 0 && <span className={styles.mobileBadge}>{activeNudgeCount}</span>}
+        </button>
+      </nav>
+
       <main className={styles.workspace}>
-        <GoalSidebar
-          goals={goals}
-          scenarioId={scenarioId}
-          onScenarioChange={handleScenarioChange}
-          onUpdateGoal={handleUpdateGoal}
-          onAddGoal={handleAddGoal}
-          onDeleteGoal={handleDeleteGoal}
-          onReset={handleResetGoals}
-          onToggleGoal={handleToggleGoal}
-        />
+        <div className={`${styles.panelSlot} ${mobilePane !== 'goals' ? styles.panelHiddenMobile : ''}`}>
+          <GoalSidebar
+            goals={goals}
+            scenarioId={scenarioId}
+            onScenarioChange={handleScenarioChange}
+            onUpdateGoal={handleUpdateGoal}
+            onAddGoal={handleAddGoal}
+            onDeleteGoal={handleDeleteGoal}
+            onReset={handleResetGoals}
+            onToggleGoal={handleToggleGoal}
+          />
+        </div>
 
-        <LiveTranscript
-          segments={segments}
-          interim={interim}
-          onStartMic={startMic}
-          onStopMic={stopMic}
-          onSimulate={startSimulation}
-          onStopSimulation={stopSimulation}
-          onEndCall={handleEndCall}
-          onSpeedChange={handleSpeedChange}
-          speed={speed}
-          listening={listening}
-          simulating={simulating}
-          micSupported={micSupported}
-          canSynthesize={segments.length > 0}
-          synthesizing={phase === 'redacting' || phase === 'cloud'}
-          elapsedLabel={formatElapsed(elapsed)}
-          sessionTitle={scenario.company}
-          sessionMeta={`${scenario.contact} · ${scenario.role}`}
-          scriptedSeconds={scriptedSeconds}
-          error={error}
-          onDismissError={() => setError(null)}
-        />
+        <div className={`${styles.panelSlot} ${mobilePane !== 'transcript' ? styles.panelHiddenMobile : ''}`}>
+          <LiveTranscript
+            segments={segments}
+            interim={interim}
+            onStartMic={startMic}
+            onStopMic={stopMic}
+            onSimulate={startSimulation}
+            onStopSimulation={stopSimulation}
+            onEndCall={handleEndCall}
+            onSpeedChange={handleSpeedChange}
+            speed={speed}
+            listening={listening}
+            simulating={simulating}
+            micSupported={micSupported}
+            canSynthesize={segments.length > 0}
+            synthesizing={phase === 'redacting' || phase === 'cloud'}
+            elapsedLabel={formatElapsed(elapsed)}
+            sessionTitle={scenario.company}
+            sessionMeta={`${scenario.contact} · ${scenario.role}`}
+            scriptedSeconds={scriptedSeconds}
+            error={error}
+            onDismissError={() => setError(null)}
+          />
+        </div>
 
-        <CoPilotFeed
-          nudges={nudges}
-          activity={activity}
-          onDismiss={handleNudgeDismiss}
-          onMarkAsked={handleNudgeAsked}
-          active={listening || simulating}
-          localActive={localActive}
-        />
+        <div className={`${styles.panelSlot} ${mobilePane !== 'copilot' ? styles.panelHiddenMobile : ''}`}>
+          <CoPilotFeed
+            nudges={nudges}
+            activity={activity}
+            onDismiss={handleNudgeDismiss}
+            onMarkAsked={handleNudgeAsked}
+            active={listening || simulating}
+            localActive={localActive}
+          />
+        </div>
       </main>
 
       <PostCallBriefModal
@@ -739,6 +850,27 @@ export default function App() {
         redactionCount={redactionCount}
         syncStatus={syncStatus}
         onClose={() => setModalOpen(false)}
+      />
+
+      <AccountAndHistoryModal
+        open={accountModalOpen}
+        initialTab={accountModalTab}
+        session={authSession}
+        onSessionChange={(nextSession) => {
+          setAuthSession(nextSession);
+          listSessions(nextSession.uid).then((items) => setSavedCount(items.length));
+        }}
+        onOpenBrief={(selectedBrief) => {
+          setBrief(selectedBrief);
+          setRedactionCount(selectedBrief.redactionCount);
+          setSyncStatus(selectedBrief.syncStatus);
+          setPhase('ready');
+          setModalOpen(true);
+        }}
+        onClose={() => {
+          setAccountModalOpen(false);
+          listSessions(authSession.uid).then((items) => setSavedCount(items.length));
+        }}
       />
 
       <p className={styles.bootNote} aria-hidden="true">
