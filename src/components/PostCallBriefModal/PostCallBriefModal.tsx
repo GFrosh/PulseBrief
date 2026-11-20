@@ -130,7 +130,7 @@ export default function PostCallBriefModal({
               <span className={styles.stepLabel}>Step 1 · On-device</span>
               <span className={styles.stepText}>
                 {phase === 'redacting'
-                  ? 'Redacting PII locally on Gemini Nano 4…'
+                  ? 'Redacting PII locally before cloud escalation…'
                   : `PII masked before upload${redactionCount ? ` — ${redactionCount} sensitive items` : ' — no PII found'}`}
               </span>
             </div>

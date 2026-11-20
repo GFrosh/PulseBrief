@@ -4,6 +4,8 @@ import GoalSidebar from './components/GoalSidebar/GoalSidebar';
 import LiveTranscript from './components/LiveTranscript/LiveTranscript';
 import CoPilotFeed from './components/CoPilotFeed/CoPilotFeed';
 import PostCallBriefModal from './components/PostCallBriefModal/PostCallBriefModal';
+import RuntimeStatusBanner from './components/RuntimeStatusBanner/RuntimeStatusBanner';
+import AccountAndHistoryModal from './components/AccountAndHistoryModal/AccountAndHistoryModal';
 import type {
   ActivityEntry,
   CoPilotNudge,
@@ -38,7 +40,8 @@ import {
   redactPiiLocally,
   synthesizePostCallBrief,
 } from './services/hybridAI';
-import { saveSession } from './services/sessionStore';
+import { listLocalSessions, listSessions, saveSession } from './services/sessionStore';
+import { getGuestId, watchAuthSession, type AuthSession } from './config/firebase';
 import styles from './App.module.css';
 
 type ModalPhase = 'ready' | 'redacting' | 'cloud';
@@ -87,7 +90,19 @@ export default function App() {
   const [telemetry, setTelemetry] = useState<InferenceTelemetry>(() => createEmptyTelemetry());
   const [routingMode, setRoutingMode] = useState<RoutingMode>('AUTO_HYBRID');
   const [nano, setNano] = useState<NanoAvailability>('CHECKING');
+  const [nanoDetail, setNanoDetail] = useState<string>('');
   const [online, setOnline] = useState<boolean>(() => navigator.onLine);
+  const [dismissedBanner, setDismissedBanner] = useState<string | null>(null);
+  const [authSession, setAuthSession] = useState<AuthSession>(() => ({
+    uid: getGuestId(),
+    email: null,
+    displayName: 'Local Guest',
+    isAnonymous: true,
+    isGuest: true,
+  }));
+  const [savedCount, setSavedCount] = useState<number>(() => listLocalSessions().length);
+  const [accountModalOpen, setAccountModalOpen] = useState(false);
+  const [accountModalTab, setAccountModalTab] = useState<'account' | 'history'>('history');
   const [listening, setListening] = useState(false);
   const [simulating, setSimulating] = useState(false);
   const [speed, setSpeed] = useState(1);
@@ -135,22 +150,47 @@ export default function App() {
 
   /* --- Environment probes ------------------------------------------------ */
 
+  const refreshNanoStatus = useCallback(() => {
+    checkOnDeviceNanoStatus().then((result) => {
+      setNano(result.status);
+      setNanoDetail(result.detail);
+      nanoRef.current = result.status;
+      setDismissedBanner(null);
+    });
+  }, []);
+
   useEffect(() => {
     let cancelled = false;
     checkOnDeviceNanoStatus().then((result) => {
       if (!cancelled) {
         setNano(result.status);
+        setNanoDetail(result.detail);
         nanoRef.current = result.status;
       }
     });
-    const handleOnline = () => setOnline(true);
-    const handleOffline = () => setOnline(false);
+    const handleOnline = () => {
+      setOnline(true);
+      setDismissedBanner(null);
+    };
+    const handleOffline = () => {
+      setOnline(false);
+      setDismissedBanner(null);
+    };
     window.addEventListener('online', handleOnline);
     window.addEventListener('offline', handleOffline);
+    const unsubAuth = watchAuthSession((nextSession) => {
+      if (!cancelled) {
+        setAuthSession(nextSession);
+        listSessions(nextSession.uid).then((items) => {
+          if (!cancelled) setSavedCount(items.length);
+        });
+      }
+    });
     return () => {
       cancelled = true;
       window.removeEventListener('online', handleOnline);
       window.removeEventListener('offline', handleOffline);
+      unsubAuth();
     };
   }, []);
 
@@ -501,9 +541,11 @@ export default function App() {
       setBrief(draft);
       setPhase('ready');
 
-      const persisted = await saveSession(draft);
+      const persisted = await saveSession(draft, authSession.uid);
       setSyncStatus(persisted);
       setBrief((previous) => (previous ? { ...previous, syncStatus: persisted } : previous));
+      const updatedList = await listSessions(authSession.uid);
+      setSavedCount(updatedList.length);
     } catch (synthesisError) {
       console.error('[PulseBrief] Post-call pipeline failed', synthesisError);
       setError('The synthesis pipeline failed. Check the console, then try again.');
@@ -512,7 +554,7 @@ export default function App() {
     } finally {
       synthBusyRef.current = false;
     }
-  }, [applyTelemetry, pushActivity, recordCall, scenario, stopAll]);
+  }, [applyTelemetry, authSession.uid, pushActivity, recordCall, scenario, stopAll]);
 
   const endCallRef = useRef(handleEndCall);
   endCallRef.current = handleEndCall;
@@ -678,7 +720,7 @@ export default function App() {
   const coveredCount = goals.filter((goal) => goal.status === 'covered').length;
   const activeNudgeCount = nudges.filter((nudge) => !nudge.dismissed).length;
   const demoMode = isDemoEngine;
-  const localActive = !online || nano === 'AVAILABLE' || demoMode;
+  const localActive = (!demoMode && nano === 'AVAILABLE') || (!online && demoMode);
   const micSupported = isLiveMicSupported();
   const scriptedSeconds = scenarioDurationSeconds(scenario, speed);
 
@@ -694,6 +736,28 @@ export default function App() {
         cloudReady={isCloudReady()}
         theme={theme}
         onToggleTheme={() => setTheme((value) => (value === 'dark' ? 'light' : 'dark'))}
+        authSession={authSession}
+        savedCount={savedCount}
+        onOpenHistory={() => {
+          setAccountModalTab('history');
+          setAccountModalOpen(true);
+        }}
+        onOpenAccount={() => {
+          setAccountModalTab('account');
+          setAccountModalOpen(true);
+        }}
+      />
+
+      <RuntimeStatusBanner
+        online={online}
+        nanoStatus={nano}
+        nanoDetail={nanoDetail}
+        routingMode={routingMode}
+        simulated={demoMode}
+        onRetryCheck={refreshNanoStatus}
+        onSwitchToCloud={() => handleRoutingMode('AUTO_HYBRID')}
+        dismissedKey={dismissedBanner}
+        onDismiss={(key) => setDismissedBanner(key)}
       />
 
       <nav className={styles.mobileNav} aria-label="Workspace views">
@@ -786,6 +850,27 @@ export default function App() {
         redactionCount={redactionCount}
         syncStatus={syncStatus}
         onClose={() => setModalOpen(false)}
+      />
+
+      <AccountAndHistoryModal
+        open={accountModalOpen}
+        initialTab={accountModalTab}
+        session={authSession}
+        onSessionChange={(nextSession) => {
+          setAuthSession(nextSession);
+          listSessions(nextSession.uid).then((items) => setSavedCount(items.length));
+        }}
+        onOpenBrief={(selectedBrief) => {
+          setBrief(selectedBrief);
+          setRedactionCount(selectedBrief.redactionCount);
+          setSyncStatus(selectedBrief.syncStatus);
+          setPhase('ready');
+          setModalOpen(true);
+        }}
+        onClose={() => {
+          setAccountModalOpen(false);
+          listSessions(authSession.uid).then((items) => setSavedCount(items.length));
+        }}
       />
 
       <p className={styles.bootNote} aria-hidden="true">

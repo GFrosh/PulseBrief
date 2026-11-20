@@ -1,5 +1,16 @@
 import { initializeApp, getApp, getApps, type FirebaseApp } from 'firebase/app';
-import { getAuth, onAuthStateChanged, signInAnonymously, type Auth } from 'firebase/auth';
+import {
+  GoogleAuthProvider,
+  createUserWithEmailAndPassword,
+  getAuth,
+  onAuthStateChanged,
+  signInAnonymously,
+  signInWithEmailAndPassword,
+  signInWithPopup,
+  signOut,
+  type Auth,
+  type User,
+} from 'firebase/auth';
 import {
   initializeFirestore,
   persistentLocalCache,
@@ -15,8 +26,9 @@ import { initializeAppCheck, ReCaptchaEnterpriseProvider } from 'firebase/app-ch
  *  1. Never throw at import time — judges may open the app with no `.env` at all.
  *  2. Every credential comes from `import.meta.env.VITE_*`; nothing is hardcoded.
  *  3. If config is present, we wire App Check (reCAPTCHA Enterprise, with debug
- *     token support), anonymous auth, and an IndexedDB-persisted Firestore so a
- *     session captured offline syncs itself once the network returns.
+ *     token support), Firebase Auth (Google, Email/Password, or Anonymous),
+ *     and an IndexedDB-persisted Firestore so a session captured offline syncs
+ *     itself once the network returns.
  */
 
 const env = import.meta.env;
@@ -44,8 +56,6 @@ if (isFirebaseConfigured) {
     app = getApps().length > 0 ? getApp() : initializeApp(firebaseConfig);
 
     // --- App Check ---------------------------------------------------------
-    // The debug token must be present on `self` BEFORE initializeAppCheck so the
-    // SDK exchanges it for a real token instead of failing the reCAPTCHA handshake.
     if (env.VITE_APPCHECK_DEBUG_TOKEN) {
       (self as unknown as Record<string, unknown>).FIREBASE_APPCHECK_DEBUG_TOKEN =
         env.VITE_APPCHECK_DEBUG_TOKEN;
@@ -89,8 +99,17 @@ if (isFirebaseConfigured) {
 export { app, auth, db };
 export const isAppCheckEnabled = appCheckReady;
 
+export interface AuthSession {
+  uid: string;
+  email: string | null;
+  displayName: string | null;
+  isAnonymous: boolean;
+  isGuest: boolean;
+}
+
 /** Guest identity used when Firebase credentials are absent (or auth fails). */
 const GUEST_KEY = 'pulsebrief.guestId';
+const LOCAL_PROFILE_KEY = 'pulsebrief.localProfile';
 
 export function getGuestId(): string {
   try {
@@ -104,14 +123,60 @@ export function getGuestId(): string {
   }
 }
 
+function readLocalProfile(): AuthSession | null {
+  try {
+    const raw = localStorage.getItem(LOCAL_PROFILE_KEY);
+    if (!raw) return null;
+    return JSON.parse(raw) as AuthSession;
+  } catch {
+    return null;
+  }
+}
+
+function writeLocalProfile(session: AuthSession | null): void {
+  try {
+    if (!session) {
+      localStorage.removeItem(LOCAL_PROFILE_KEY);
+    } else {
+      localStorage.setItem(LOCAL_PROFILE_KEY, JSON.stringify(session));
+    }
+  } catch {
+    /* ignore storage errors */
+  }
+}
+
+function toAuthSession(user: User | null): AuthSession {
+  if (!user) {
+    const local = readLocalProfile();
+    if (local) return local;
+    return {
+      uid: getGuestId(),
+      email: null,
+      displayName: 'Local Guest',
+      isAnonymous: true,
+      isGuest: true,
+    };
+  }
+  return {
+    uid: user.uid,
+    email: user.email,
+    displayName: user.displayName || (user.email ? user.email.split('@')[0] : 'Signed-in User'),
+    isAnonymous: user.isAnonymous,
+    isGuest: false,
+  };
+}
+
 let signInPromise: Promise<string | null> | null = null;
 
 /**
- * Anonymous sign-in, memoized. Resolves to a uid (real or local guest), or
- * `null` when auth is impossible — callers treat that as "store locally".
+ * Ensures an active uid for persistence. Prefers an already signed-in user,
+ * otherwise falls back to anonymous Firebase sign-in or a local guest ID.
  */
 export function ensureSignedIn(): Promise<string | null> {
-  if (!auth) return Promise.resolve(getGuestId());
+  if (!auth) {
+    const local = readLocalProfile();
+    return Promise.resolve(local?.uid ?? getGuestId());
+  }
 
   if (auth.currentUser) return Promise.resolve(auth.currentUser.uid);
 
@@ -130,19 +195,66 @@ export function ensureSignedIn(): Promise<string | null> {
   return signInPromise;
 }
 
-/** Observable auth state, used by the telemetry receipt to show sync identity. */
-export function watchAuth(callback: (uid: string | null) => void): () => void {
+export async function signInWithGoogleAccount(): Promise<AuthSession> {
   if (!auth) {
-    callback(getGuestId());
+    throw new Error('Firebase Auth is not configured in this environment yet.');
+  }
+  const provider = new GoogleAuthProvider();
+  const credential = await signInWithPopup(auth, provider);
+  return toAuthSession(credential.user);
+}
+
+export async function signInWithEmailAccount(
+  email: string,
+  password: string,
+  createAccount = false,
+): Promise<AuthSession> {
+  const trimmed = email.trim();
+  if (!trimmed || !password) {
+    throw new Error('Enter both an email address and password.');
+  }
+  if (!auth) {
+    const localSession: AuthSession = {
+      uid: `local_${trimmed.toLowerCase().replace(/[^a-z0-9]/g, '_')}`,
+      email: trimmed,
+      displayName: trimmed.split('@')[0],
+      isAnonymous: false,
+      isGuest: true,
+    };
+    writeLocalProfile(localSession);
+    return localSession;
+  }
+  const credential = createAccount
+    ? await createUserWithEmailAndPassword(auth, trimmed, password)
+    : await signInWithEmailAndPassword(auth, trimmed, password);
+  return toAuthSession(credential.user);
+}
+
+export async function signOutAccount(): Promise<AuthSession> {
+  writeLocalProfile(null);
+  if (auth) {
+    await signOut(auth);
+  }
+  return toAuthSession(null);
+}
+
+/** Observable auth state for header profile & saved-session filtering. */
+export function watchAuthSession(callback: (session: AuthSession) => void): () => void {
+  if (!auth) {
+    callback(toAuthSession(null));
     return () => undefined;
   }
-  return onAuthStateChanged(auth, (user) => callback(user?.uid ?? getGuestId()));
+  return onAuthStateChanged(auth, (user) => callback(toAuthSession(user)));
+}
+
+export function watchAuth(callback: (uid: string | null) => void): () => void {
+  return watchAuthSession((session) => callback(session.uid));
 }
 
 export const firebaseMeta = {
   configured: isFirebaseConfigured,
   projectId: firebaseConfig.projectId || null,
   appCheck: appCheckReady,
-  authMode: auth ? 'anonymous' : 'local-guest',
+  authMode: auth ? 'firebase-auth' : 'local-guest',
   firestore: db ? 'persistent-local-cache' : 'localStorage',
 } as const;

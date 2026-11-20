@@ -98,7 +98,7 @@ export default function TelemetryReceipt({
           <dt>Longest local call</dt>
           <dd>
             <strong>{telemetry.localLatenciesMs.length ? Math.max(...telemetry.localLatenciesMs) : 0}ms</strong>
-            <span className={styles.muted}> · budget 500ms</span>
+            <span className={styles.muted}> · measured</span>
           </dd>
         </div>
         <div className={styles.row}>

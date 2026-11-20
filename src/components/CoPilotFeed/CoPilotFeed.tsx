@@ -120,7 +120,7 @@ function NudgeCard({
         </span>
         <span className={styles.privacyDivider} aria-hidden="true" />
         <span className={styles.privacyNote}>
-          {nudge.source === 'LOCAL_NANO' ? 'Raw audio stayed in RAM' : 'Cloud fallback used'}
+          {nudge.source === 'LOCAL_NANO' ? 'Text evaluated on-device' : 'Cloud fallback used'}
         </span>
       </div>
 
@@ -198,14 +198,14 @@ export default function CoPilotFeed({ nudges, activity, onDismiss, onMarkAsked, 
             <h3 className={styles.emptyTitle}>{active ? 'Listening for vague answers' : 'No signals yet'}</h3>
             <p className={styles.emptyBody}>
               {active
-                ? 'Gemini Nano reads each turn on-device. When an answer gets hedged, the follow-up lands here in under half a second.'
+                ? 'Reads incoming transcript turns and surfaces follow-up prompts when an answer is vague or incomplete.'
                 : 'Start a call and the co-pilot will surface the question you should have asked — with the evidence attached.'}
             </p>
             <span className={styles.emptyHint}>
               <svg viewBox="0 0 12 12" width="9" height="9" aria-hidden="true">
                 <path d="M6.8 1 2.4 7h2.4L5 11l4.6-6.4H7.2L6.8 1Z" fill="currentColor" />
               </svg>
-              sub-500ms · no audio uploaded
+              Fast follow-ups · no audio stored
             </span>
           </div>
         ) : (

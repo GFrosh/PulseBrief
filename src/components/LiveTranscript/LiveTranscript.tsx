@@ -344,7 +344,7 @@ export default function LiveTranscript({
             <rect x="2.6" y="5.2" width="6.8" height="5" rx="1.4" fill="none" stroke="currentColor" strokeWidth="1.1" />
             <path d="M4.2 5.2V3.9a1.8 1.8 0 0 1 3.6 0v1.3" fill="none" stroke="currentColor" strokeWidth="1.1" strokeLinecap="round" />
           </svg>
-          Audio processed in RAM only
+          Audio not stored by PulseBrief
         </span>
         <span className={styles.footerSpacer} />
         <span className={styles.footerItem}>
