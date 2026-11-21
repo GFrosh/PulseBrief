@@ -42,7 +42,7 @@ import {
   synthesizePostCallBrief,
 } from './services/hybridAI';
 import { listLocalSessions, listSessions, saveSession } from './services/sessionStore';
-import { getGuestId, watchAuthSession, type AuthSession } from './config/firebase';
+import { getGuestId, isExtensionOrigin, watchAuthSession, type AuthSession } from './config/firebase';
 import styles from './App.module.css';
 
 type ModalPhase = 'ready' | 'redacting' | 'cloud';
@@ -107,10 +107,13 @@ export default function App() {
   const [listening, setListening] = useState(false);
   const [tabMode, setTabMode] = useState(false);
   const [audioLevels, setAudioLevels] = useState({ mic: 0, tab: 0 });
+  const [manualSpeaker, setManualSpeaker] = useState<Speaker | null>(null);
   const [simulating, setSimulating] = useState(false);
   const [speed, setSpeed] = useState(1);
   const [elapsed, setElapsed] = useState(0);
   const [error, setError] = useState<string | null>(null);
+  const [enableMicPrompt, setEnableMicPrompt] = useState(false);
+  const [micGrantNotice, setMicGrantNotice] = useState('');
   const [modalOpen, setModalOpen] = useState(false);
   const [phase, setPhase] = useState<ModalPhase>('ready');
   const [brief, setBrief] = useState<PostCallBrief | null>(null);
@@ -125,6 +128,8 @@ export default function App() {
   const nanoRef = useRef<NanoAvailability>('CHECKING');
   const routingRef = useRef<RoutingMode>('AUTO_HYBRID');
   const speedRef = useRef(1);
+  const manualSpeakerRef = useRef<Speaker | null>(null);
+  const audioMeterFrameRef = useRef<number | null>(null);
   const turnCountRef = useRef(0);
   const recorderRef = useRef<LiveMicRecorder | null>(null);
   const tabCaptureRef = useRef<TabAudioCapture | null>(null);
@@ -161,6 +166,22 @@ export default function App() {
       nanoRef.current = result.status;
       setDismissedBanner(null);
     });
+  }, []);
+
+  useEffect(() => {
+    if (new URLSearchParams(window.location.search).get('grantMic') !== '1') return;
+    navigator.mediaDevices.getUserMedia({ audio: true }).then((granted) => {
+      granted.getTracks().forEach((track) => track.stop());
+      setMicGrantNotice('Microphone enabled. Close this tab and return to the PulseBrief Side Panel.');
+    }).catch(() => setMicGrantNotice('Microphone permission was not granted. Try again from this tab.'));
+  }, []);
+
+  const openMicGrant = useCallback(() => {
+    const target = `${window.location.origin}${window.location.pathname}?grantMic=1`;
+    const chromeApi = (window as Window & { chrome?: { tabs?: { create(options: { url: string }): void }; runtime?: { getURL(path: string): string } } }).chrome;
+    const url = chromeApi?.runtime?.getURL('index.html?grantMic=1') ?? target;
+    if (chromeApi?.tabs?.create) chromeApi.tabs.create({ url });
+    else window.open(url, '_blank', 'noopener');
   }, []);
 
   useEffect(() => {
@@ -346,7 +367,7 @@ export default function App() {
   /* --- Audio pipeline ---------------------------------------------------- */
 
   const handleInterim = useCallback((speaker: Speaker, text: string) => {
-    setInterim(text.trim() ? { speaker, text } : null);
+    setInterim(text.trim() ? { speaker: manualSpeakerRef.current ?? speaker, text } : null);
   }, []);
 
   const handleFinal = useCallback(
@@ -357,7 +378,7 @@ export default function App() {
 
       const segment: TranscriptSegment = {
         id: makeId('seg'),
-        speaker,
+        speaker: manualSpeakerRef.current ?? speaker,
         text: trimmed,
         timestamp: new Date().toISOString(),
         isFinal: true,
@@ -373,6 +394,8 @@ export default function App() {
   );
 
   const stopAll = useCallback(() => {
+    if (audioMeterFrameRef.current !== null) cancelAnimationFrame(audioMeterFrameRef.current);
+    audioMeterFrameRef.current = null;
     recorderRef.current?.stop();
     recorderRef.current = null;
     tabCaptureRef.current?.stop();
@@ -386,8 +409,27 @@ export default function App() {
     setInterim(null);
   }, []);
 
+  const cycleSpeakerMode = useCallback(() => {
+    setManualSpeaker((current) => {
+      const next = current === null ? 'You (Interviewer)' : current === 'You (Interviewer)' ? 'Guest (Prospect)' : null;
+      manualSpeakerRef.current = next;
+      return next;
+    });
+  }, []);
+
+  const flipSegmentSpeaker = useCallback((id: string) => {
+    const next = segmentsRef.current.map((segment) => segment.id === id ? {
+      ...segment,
+      speaker: segment.speaker === 'You (Interviewer)' ? 'Guest (Prospect)' as const : 'You (Interviewer)' as const,
+    } : segment);
+    segmentsRef.current = next;
+    setSegments(next);
+  }, []);
+
   const resetSession = useCallback(() => {
     stopAll();
+    manualSpeakerRef.current = null;
+    setManualSpeaker(null);
     segmentsRef.current = [];
     setSegments([]);
     setNudges([]);
@@ -425,7 +467,7 @@ export default function App() {
     const recorder = new LiveMicRecorder({
       onInterim: handleInterim,
       onFinal: handleFinal,
-      onError: (message) => setError(message),
+      onError: (message) => { setError(message); if (/microphone|mic|not allowed/i.test(message)) setEnableMicPrompt(true); },
       onListeningChange: (value) => setListening(value),
     });
     recorderRef.current = recorder;
@@ -443,7 +485,13 @@ export default function App() {
     if (!isLiveMicSupported()) { setError('Speech recognition is unavailable. Use Chrome or Edge.'); return; }
     const capture = new TabAudioCapture();
     tabCaptureRef.current = capture;
-    capture.onLevels = (mic, tab) => setAudioLevels({ mic, tab });
+    capture.onLevels = (mic, tab) => {
+      if (audioMeterFrameRef.current !== null) cancelAnimationFrame(audioMeterFrameRef.current);
+      audioMeterFrameRef.current = requestAnimationFrame(() => {
+        audioMeterFrameRef.current = null;
+        setAudioLevels({ mic, tab });
+      });
+    };
     capture.onEnded = () => {
       recorderRef.current?.stop(); recorderRef.current = null;
       capture.stop(); tabCaptureRef.current = null; setTabMode(false); setListening(false);
@@ -451,8 +499,9 @@ export default function App() {
     };
     try {
       await capture.start();
+      if (capture.micDenied && isExtensionOrigin) setEnableMicPrompt(true);
       setTabMode(true);
-      const recorder = new LiveMicRecorder({ onInterim: handleInterim, onFinal: handleFinal, onError: setError, onListeningChange: setListening });
+      const recorder = new LiveMicRecorder({ onInterim: handleInterim, onFinal: handleFinal, onError: (message) => { setError(message); if (/microphone|mic|not allowed/i.test(message)) setEnableMicPrompt(true); }, onListeningChange: setListening });
       recorder.speakerResolver = () => capture.micLevel > 0.025 && capture.micLevel > capture.tabLevel * 1.25 ? 'You (Interviewer)' : 'Guest (Prospect)';
       recorderRef.current = recorder;
       recorder.start();
@@ -855,6 +904,9 @@ export default function App() {
             onStopTabAudio={stopTabAudio}
             tabMode={tabMode}
             audioLevels={audioLevels}
+            speakerMode={manualSpeaker}
+            onCycleSpeakerMode={cycleSpeakerMode}
+            onFlipSpeaker={flipSegmentSpeaker}
             onSimulate={startSimulation}
             onStopSimulation={stopSimulation}
             onEndCall={handleEndCall}
@@ -871,6 +923,10 @@ export default function App() {
             scriptedSeconds={scriptedSeconds}
             error={error}
             onDismissError={() => setError(null)}
+            extensionOrigin={isExtensionOrigin}
+            enableMicPrompt={enableMicPrompt}
+            onEnableMic={openMicGrant}
+            micGrantNotice={micGrantNotice}
           />
         </div>
 

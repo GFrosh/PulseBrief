@@ -181,7 +181,7 @@ const hybridParams = (mode: InferenceMode, temperature: number): HybridParams =>
   mode,
   inCloudParams: {
     model: MODEL_EDGE,
-    generationConfig: { temperature, responseMimeType: 'application/json' },
+    generationConfig: { temperature, responseMimeType: 'application/json', maxOutputTokens: 450 },
   },
 });
 
@@ -255,20 +255,34 @@ export const sourceTone = (source: InferenceSource): 'local' | 'cloud' | 'redact
   return 'cloud';
 };
 
-/** Extract the first JSON object from a model response (handles code fences). */
-export function extractJson<T>(raw: string): T | null {
-  const cleaned = raw
-    .replace(/```json/gi, '```')
-    .replace(/```/g, '')
-    .trim();
+/** Parse complete, fenced, adjacent-object, or partially truncated model JSON. */
+export function safeParseModelJson<T>(rawText: string, fallback: T): T {
+  const cleaned = rawText.replace(/```\s*(?:json)?/gi, '').trim();
   const start = cleaned.indexOf('{');
   const end = cleaned.lastIndexOf('}');
-  if (start === -1 || end === -1 || end <= start) return null;
-  try {
-    return JSON.parse(cleaned.slice(start, end + 1)) as T;
-  } catch {
-    return null;
+  if (start >= 0 && end > start) {
+    const candidate = cleaned.slice(start, end + 1).replace(/"\s*}\s*\{"/g, '", "');
+    try {
+      const parsed = JSON.parse(candidate) as unknown;
+      if (parsed && typeof parsed === 'object' && !Array.isArray(parsed) && fallback && typeof fallback === 'object') {
+        return { ...(fallback as object), ...(parsed as object) } as T;
+      }
+      return parsed as T;
+    } catch { /* recover useful fields from a truncated response below */ }
   }
+
+  const recovered: Record<string, unknown> = {};
+  const pairPattern = /["']?([\w]+)["']?\s*:\s*("(?:\\.|[^"\\])*"|'(?:\\.|[^'\\])*'|true|false|null|-?\d+(?:\.\d+)?|\[[^\]]*\])/gs;
+  for (const match of cleaned.matchAll(pairPattern)) {
+    const value = match[2];
+    try {
+      recovered[match[1]] = value.startsWith("'") ? value.slice(1, -1) : JSON.parse(value);
+    } catch { /* ignore a truncated individual value */ }
+  }
+  if (Object.keys(recovered).length && fallback && typeof fallback === 'object') {
+    return { ...(fallback as object), ...recovered } as T;
+  }
+  return Object.keys(recovered).length ? recovered as T : fallback;
 }
 
 function pickModel(mode: RoutingMode, nano: NanoAvailability, set: ModelSet): {
@@ -790,7 +804,8 @@ export async function evaluateLiveGoals(
     '- "partial" when the topic was addressed but details are missing.',
     '- Never downgrade a goal that is already covered.',
     '- evidenceSnippet must be a verbatim quote, <= 25 words.',
-    'Respond with JSON only, exactly this shape:',
+    'Respond with ONE raw JSON object only. Do NOT use markdown code blocks. Keep values under 18 words.',
+    'Return exactly this shape:',
     '{"updates":[{"id":"goal-1","status":"covered","evidenceSnippet":"..."}]}',
     '',
     `GOALS:\n${pending.map((goal) => `- ${goal.id}: ${goal.text} (current: ${goal.status})`).join('\n')}`,
@@ -799,7 +814,7 @@ export async function evaluateLiveGoals(
   ].join('\n');
 
   const remote = await runModel<GoalUpdatePayload>(routingMode, nanoStatus, prompt, (raw) => {
-    const parsed = extractJson<GoalUpdatePayload>(raw);
+    const parsed = safeParseModelJson<GoalUpdatePayload>(raw, { updates: [] });
     if (!parsed || !Array.isArray(parsed.updates)) return null;
     const updates = parsed.updates
       .filter((update) => typeof update?.id === 'string')
@@ -854,7 +869,7 @@ export async function generateLiveFollowUpNudge(
     'Nudge when: (a) the guest gave a hedged or vague answer without numbers, (b) an important question was left shallow, or (c) a session goal was touched but not evidenced.',
     'Do NOT nudge when the answer was concrete, or when the last turn was the interviewer speaking.',
     'The suggested question must be specific, under 30 words, and reference what the guest just said.',
-    'Respond with JSON only:',
+    'Respond with ONE raw JSON object only. Do NOT use markdown code blocks. Keep values under 18 words.',
     '{"shouldNudge":true,"triggerType":"VAGUE_ANSWER|UNANSWERED_QUESTION|FOLLOW_UP_OPPORTUNITY","detectedContext":"<=25 word quote of the vague answer","suggestedQuestion":"..."}',
     '',
     `OPEN GOALS:\n${goals.filter((goal) => goal.status !== 'covered').map((goal) => `- ${goal.text}`).join('\n') || '- none'}`,
@@ -863,7 +878,7 @@ export async function generateLiveFollowUpNudge(
   ].join('\n');
 
   const remote = await runModel<NudgeDraft>(routingMode, nanoStatus, prompt, (raw) => {
-    const parsed = extractJson<NudgeDraft>(raw);
+    const parsed = safeParseModelJson<NudgeDraft>(raw, { shouldNudge: false });
     if (!parsed || typeof parsed.shouldNudge !== 'boolean') return null;
     const allowed = ['VAGUE_ANSWER', 'UNANSWERED_QUESTION', 'FOLLOW_UP_OPPORTUNITY'] as const;
     return {
@@ -916,7 +931,7 @@ export async function redactPiiLocally(
   ].join('\n');
 
   const remote = await runModel<RedactionOutcome>(routingMode, nanoStatus, prompt, (raw) => {
-    const parsed = extractJson<{ sanitizedTranscript?: string; entities?: string[] }>(raw);
+    const parsed = safeParseModelJson<{ sanitizedTranscript?: string; entities?: string[] }>(raw, {});
     if (!parsed || typeof parsed.sanitizedTranscript !== 'string') return null;
     // Guard against a truncated or summarised rewrite: the sanitized text must
     // stay comparable in length to the source, or we discard it.
@@ -982,12 +997,12 @@ export async function synthesizePostCallBrief(
     crmFields?: Partial<CrmFields>;
     followUpEmailDraft?: string;
   }>('FORCE_CLOUD', 'AVAILABLE', prompt, (raw) => {
-    const parsed = extractJson<{
+    const parsed = safeParseModelJson<{
       title?: string;
       executiveSummary?: string[];
       crmFields?: Partial<CrmFields>;
       followUpEmailDraft?: string;
-    }>(raw);
+    }>(raw, {});
     if (!parsed || !Array.isArray(parsed.executiveSummary) || parsed.executiveSummary.length < 3) return null;
     return parsed;
   });

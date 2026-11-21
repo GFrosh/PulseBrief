@@ -185,6 +185,10 @@ export class TabAudioCapture {
   private timer = 0;
   micLevel = 0;
   tabLevel = 0;
+  micDenied = false;
+  private energyWindow: Array<{ at: number; mic: number; tab: number }> = [];
+  private lastActiveSpeaker: Speaker = 'You (Interviewer)';
+  private lastActiveAt = 0;
   onLevels?: (mic: number, tab: number) => void;
   onEnded?: () => void;
 
@@ -193,7 +197,7 @@ export class TabAudioCapture {
     const videoTracks = this.display.getVideoTracks();
     videoTracks.forEach((track) => { track.onended = null; track.stop(); });
     this.display.getAudioTracks().forEach((track) => { track.onended = () => this.onEnded?.(); });
-    try { this.mic = await navigator.mediaDevices.getUserMedia({ audio: true }); } catch { /* tab-only capture is valid */ }
+    try { this.mic = await navigator.mediaDevices.getUserMedia({ audio: true }); } catch { this.micDenied = true; /* tab-only capture is valid */ }
     this.context = new AudioContext();
     const tabAnalyser = this.context.createAnalyser();
     tabAnalyser.fftSize = 512;
@@ -209,10 +213,29 @@ export class TabAudioCapture {
       return Math.min(1, Math.sqrt(sum / data.length) * 3.2);
     };
     this.timer = window.setInterval(() => {
-      this.micLevel = rms(micAnalyser, this.mic);
+      const rawMic = rms(micAnalyser, this.mic);
       this.tabLevel = rms(tabAnalyser, this.display);
+      this.micLevel = Math.max(0, rawMic - (this.tabLevel > 0.015 ? 0.55 * this.tabLevel : 0));
+      const at = Date.now();
+      this.energyWindow.push({ at, mic: this.micLevel, tab: this.tabLevel });
+      this.energyWindow = this.energyWindow.filter((sample) => at - sample.at <= 1500);
       this.onLevels?.(this.micLevel, this.tabLevel);
-    }, 67);
+    }, 50);
+  }
+
+  resolveSpeaker(): Speaker {
+    const now = Date.now();
+    this.energyWindow = this.energyWindow.filter((sample) => now - sample.at <= 1500);
+    const micSamples = this.energyWindow.map((sample) => sample.mic).filter((level) => level > 0.015);
+    const tabSamples = this.energyWindow.map((sample) => sample.tab).filter((level) => level > 0.015);
+    const micEnergy = micSamples.length ? micSamples.reduce((sum, level) => sum + level, 0) / micSamples.length : 0;
+    const tabEnergy = tabSamples.length ? tabSamples.reduce((sum, level) => sum + level, 0) / tabSamples.length : 0;
+    if (Math.max(micEnergy, tabEnergy) > 0.015) {
+      this.lastActiveSpeaker = tabEnergy > micEnergy ? 'Guest (Prospect)' : 'You (Interviewer)';
+      this.lastActiveAt = now;
+      return this.lastActiveSpeaker;
+    }
+    return now - this.lastActiveAt <= 800 ? this.lastActiveSpeaker : 'You (Interviewer)';
   }
 
   stop(): void {
@@ -225,6 +248,7 @@ export class TabAudioCapture {
     this.context = null;
     this.micLevel = 0;
     this.tabLevel = 0;
+    this.energyWindow = [];
     this.onLevels?.(0, 0);
   }
 }
