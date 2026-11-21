@@ -19,6 +19,35 @@
   align-items: center;
   justify-content: space-between;
   gap: 8px;
+  flex-wrap: wrap;
+}
+
+.headerTitleGroup {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.popOutBtn {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  height: 26px;
+  padding: 0 8px;
+  border-radius: 6px;
+  border: 1px solid var(--border);
+  background: var(--surface-1);
+  color: var(--text-secondary);
+  font-size: 10px;
+  font-weight: 550;
+  white-space: nowrap;
+  transition: color var(--dur-fast), background var(--dur-fast), border-color var(--dur-fast);
+}
+
+.popOutBtn:hover {
+  color: var(--text);
+  background: var(--surface-2);
+  border-color: var(--border-strong);
 }
 
 .title {
@@ -528,5 +557,114 @@
   .question,
   .privacyNote {
     overflow-wrap: anywhere;
+  }
+}
+
+/* --- Document Picture-in-Picture Floating Window ------------------------- */
+.pipRoot {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+  padding: 14px;
+  min-height: 100dvh;
+  background: var(--bg);
+  color: var(--text);
+  font-family: var(--font-sans);
+}
+
+.pipHeader {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  padding-bottom: 10px;
+  border-bottom: 1px solid var(--border);
+}
+
+.pipTitleRow {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.pipGoals {
+  padding: 10px 12px;
+  border-radius: var(--radius-md);
+  border: 1px solid var(--border);
+  background: var(--surface-1);
+}
+
+.pipGoalsHead {
+  font-size: var(--text-xs);
+  color: var(--text);
+}
+
+.pipProgressBar {
+  display: flex;
+  gap: 4px;
+  margin: 8px 0;
+}
+
+.pipProgressBar i {
+  height: 4px;
+  flex: 1;
+  border-radius: var(--radius-pill);
+}
+
+.pipSegCovered {
+  background: var(--color-local);
+}
+
+.pipSegPartial {
+  background: var(--color-redacted);
+}
+
+.pipSegPending {
+  background: var(--surface-3);
+}
+
+.pipGoalChips {
+  display: flex;
+  gap: 5px;
+  flex-wrap: wrap;
+}
+
+.pipGoalChip {
+  padding: 4px 8px;
+  border-radius: var(--radius-pill);
+  border: 1px solid var(--border);
+  background: var(--surface-2);
+  font-size: 11px;
+  color: var(--text-secondary);
+}
+
+.pipGoalChipCovered {
+  color: var(--color-local);
+  border-color: var(--color-local-line);
+  background: var(--color-local-soft);
+}
+
+.pipNudges {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.pipSubheading {
+  font-size: var(--text-xs);
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: var(--text-tertiary);
+}
+
+.pipEmpty {
+  font-size: var(--text-xs);
+  color: var(--text-tertiary);
+}
+
+@media (max-width: 767px) {
+  .popOutBtn {
+    display: none;
   }
 }
