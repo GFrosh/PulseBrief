@@ -287,6 +287,42 @@ npm run preview    # serve the production build on 0.0.0.0:4173
 npm run typecheck  # tsc --noEmit
 ```
 
+## Deploy
+
+The site is hosted on Firebase Hosting (project `pulsebrief-cf45e`).
+
+**How CI/CD works**
+
+- **Pull requests to `master`** run `.github/workflows/ci.yml`: `npm ci`, `npm run typecheck`, `npm run build`. Nothing is deployed.
+- **Pushes to `master`** (and the manual *Run workflow* button) run `.github/workflows/deploy.yml`. It checks that every required secret is set, builds with them, and deploys to the live channel. Only one deploy runs at a time.
+- There are no preview channels for pull requests. Preview URLs use other domains that the sign in and App Check settings do not allow.
+- The build always sets `VITE_APPCHECK_DEBUG_TOKEN` to an empty string, so a debug token can never end up in the public site.
+
+**GitHub Actions secrets** (Settings → Secrets and variables → Actions → *Secrets*)
+
+The seven build settings are stored as secrets, not variables:
+
+- `VITE_FIREBASE_API_KEY`
+- `VITE_FIREBASE_AUTH_DOMAIN`
+- `VITE_FIREBASE_PROJECT_ID`
+- `VITE_FIREBASE_STORAGE_BUCKET`
+- `VITE_FIREBASE_MESSAGING_SENDER_ID`
+- `VITE_FIREBASE_APP_ID`
+- `VITE_RECAPTCHA_SITE_KEY`
+
+Alongside them, the deploy step needs:
+
+- `FIREBASE_SERVICE_ACCOUNT`: the service account JSON for the Firebase project.
+
+**Deploying by hand**
+
+```bash
+VITE_APPCHECK_DEBUG_TOKEN= npm run build   # blank debug token, so it is not bundled
+firebase deploy --only hosting
+```
+
+Make sure the other `VITE_*` values are present in your environment or `.env` for the build.
+
 ## License
 
 Apache 2.0 — see [LICENSE](./LICENSE).
