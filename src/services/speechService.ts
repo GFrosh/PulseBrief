@@ -76,6 +76,7 @@ export class LiveMicRecorder {
   private shouldListen = false;
   private callbacks: TranscriptCallbacks;
   private restartTimer: number | null = null;
+  speakerResolver: (() => Speaker) | null = null;
 
   constructor(callbacks: TranscriptCallbacks) {
     this.callbacks = callbacks;
@@ -112,12 +113,12 @@ export class LiveMicRecorder {
         const text = result[0]?.transcript?.trim() ?? '';
         if (!text) continue;
         if (result.isFinal) {
-          this.callbacks.onFinal('You (Interviewer)', text);
+          this.callbacks.onFinal(this.speakerResolver?.() ?? 'You (Interviewer)', text);
         } else {
           interim += `${text} `;
         }
       }
-      this.callbacks.onInterim('You (Interviewer)', interim.trim());
+      this.callbacks.onInterim(this.speakerResolver?.() ?? 'You (Interviewer)', interim.trim());
     };
 
     recognition.onerror = (event) => {
@@ -173,6 +174,58 @@ export class LiveMicRecorder {
     }
     this.recognition = null;
     this.callbacks.onListeningChange?.(false);
+  }
+}
+
+/** Captures shared tab audio and optional mic levels without recording audio. */
+export class TabAudioCapture {
+  private display: MediaStream | null = null;
+  private mic: MediaStream | null = null;
+  private context: AudioContext | null = null;
+  private timer = 0;
+  micLevel = 0;
+  tabLevel = 0;
+  onLevels?: (mic: number, tab: number) => void;
+  onEnded?: () => void;
+
+  async start(): Promise<void> {
+    this.display = await navigator.mediaDevices.getDisplayMedia({ video: true, audio: true });
+    const videoTracks = this.display.getVideoTracks();
+    videoTracks.forEach((track) => { track.onended = null; track.stop(); });
+    this.display.getAudioTracks().forEach((track) => { track.onended = () => this.onEnded?.(); });
+    try { this.mic = await navigator.mediaDevices.getUserMedia({ audio: true }); } catch { /* tab-only capture is valid */ }
+    this.context = new AudioContext();
+    const tabAnalyser = this.context.createAnalyser();
+    tabAnalyser.fftSize = 512;
+    this.context.createMediaStreamSource(this.display).connect(tabAnalyser);
+    const micAnalyser = this.context.createAnalyser();
+    micAnalyser.fftSize = 512;
+    if (this.mic) this.context.createMediaStreamSource(this.mic).connect(micAnalyser);
+    const rms = (analyser: AnalyserNode, stream: MediaStream | null) => {
+      if (!stream) return 0;
+      const data = new Uint8Array(analyser.fftSize);
+      analyser.getByteTimeDomainData(data);
+      const sum = data.reduce((total, value) => total + ((value - 128) / 128) ** 2, 0);
+      return Math.min(1, Math.sqrt(sum / data.length) * 3.2);
+    };
+    this.timer = window.setInterval(() => {
+      this.micLevel = rms(micAnalyser, this.mic);
+      this.tabLevel = rms(tabAnalyser, this.display);
+      this.onLevels?.(this.micLevel, this.tabLevel);
+    }, 67);
+  }
+
+  stop(): void {
+    window.clearInterval(this.timer);
+    this.display?.getTracks().forEach((track) => track.stop());
+    this.mic?.getTracks().forEach((track) => track.stop());
+    this.display = null;
+    this.mic = null;
+    void this.context?.close();
+    this.context = null;
+    this.micLevel = 0;
+    this.tabLevel = 0;
+    this.onLevels?.(0, 0);
   }
 }
 

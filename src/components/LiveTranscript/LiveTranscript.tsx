@@ -8,6 +8,10 @@ interface LiveTranscriptProps {
   interim: { speaker: Speaker; text: string } | null;
   onStartMic: () => void;
   onStopMic: () => void;
+  onStartTabAudio: () => void;
+  onStopTabAudio: () => void;
+  tabMode: boolean;
+  audioLevels: { mic: number; tab: number };
   onSimulate: () => void;
   onStopSimulation: () => void;
   onEndCall: () => void;
@@ -46,6 +50,10 @@ export default function LiveTranscript({
   interim,
   onStartMic,
   onStopMic,
+  onStartTabAudio,
+  onStopTabAudio,
+  tabMode,
+  audioLevels,
   onSimulate,
   onStopSimulation,
   onEndCall,
@@ -100,6 +108,10 @@ export default function LiveTranscript({
             <span className={styles.dotSeparator} aria-hidden="true" />
             {sessionMeta}
           </p>
+          {tabMode && <div className={styles.audioMeters} aria-label="Live audio levels">
+            <span>You (Mic)</span><i><b style={{ width: `${Math.max(3, audioLevels.mic * 100)}%`, background: 'var(--color-local)' }} /></i>
+            <span>Prospect (Tab)</span><i><b style={{ width: `${Math.max(3, audioLevels.tab * 100)}%`, background: 'var(--color-cloud)' }} /></i>
+          </div>}
         </div>
 
         <div className={styles.stats}>
@@ -141,6 +153,8 @@ export default function LiveTranscript({
               Start live mic
             </button>
           )}
+
+          {tabMode ? <button type="button" className={styles.simButton} onClick={onStopTabAudio}>Stop tab audio</button> : <button type="button" className={styles.simButton} onClick={onStartTabAudio} disabled={listening || simulating || !micSupported} title="Share a browser tab with audio">Tab + Mic</button>}
 
           {simulating ? (
             <button type="button" className={`${styles.simButton} ${styles.simActive}`} onClick={onStopSimulation}>

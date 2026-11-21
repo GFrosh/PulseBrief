@@ -119,3 +119,13 @@
     display: none;
   }
 }
+
+@media (max-width: 520px) {
+  .mobileNav { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .mobileNav > button:nth-child(2) { display: none; }
+  .mobileNav > button:nth-child(3)::before { content: 'Co-pilot & '; }
+  .workspace.compactCombined > .panelSlot:first-child { display: flex; }
+  .workspace.compactCombined > .panelSlot:last-child { display: flex; }
+  .workspace.compactCombined > .panelSlot:first-child { max-height: 34dvh; overflow: auto; border-bottom: 1px solid var(--border); }
+  .workspace.compactCombined > .panelSlot:last-child { flex: 1; min-height: 55dvh; }
+}

@@ -86,6 +86,10 @@ Routing mode is user-selectable, which is how judges can watch the split live:
 
 ## Quick start
 
+### Loading as a Chrome Side Panel Extension
+
+Run `npm run build`, open `chrome://extensions`, enable **Developer mode**, choose **Load unpacked**, and select the generated `dist/` folder. Click the PulseBrief extension icon to open the side panel beside a meeting tab.
+
 ```bash
 git clone <your-repo-url> pulsebrief
 cd pulsebrief

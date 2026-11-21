@@ -25,6 +25,10 @@
   min-width: 0;
 }
 
+.audioMeters { display: grid; grid-template-columns: auto minmax(50px, 100px) auto minmax(50px, 100px); align-items: center; gap: 5px 8px; margin-top: 8px; color: var(--text-tertiary); font-size: 9px; }
+.audioMeters i { height: 4px; overflow: hidden; border-radius: 9px; background: var(--surface-3); }
+.audioMeters b { display: block; height: 100%; border-radius: inherit; transition: width 90ms linear; }
+
 .titleRow {
   display: flex;
   align-items: center;

@@ -26,6 +26,7 @@ import {
   SimulatedCallStreamer,
   isLiveMicSupported,
   scenarioDurationSeconds,
+  TabAudioCapture,
 } from './services/speechService';
 import {
   applyDeterministicRedaction,
@@ -104,6 +105,8 @@ export default function App() {
   const [accountModalOpen, setAccountModalOpen] = useState(false);
   const [accountModalTab, setAccountModalTab] = useState<'account' | 'history'>('history');
   const [listening, setListening] = useState(false);
+  const [tabMode, setTabMode] = useState(false);
+  const [audioLevels, setAudioLevels] = useState({ mic: 0, tab: 0 });
   const [simulating, setSimulating] = useState(false);
   const [speed, setSpeed] = useState(1);
   const [elapsed, setElapsed] = useState(0);
@@ -124,6 +127,7 @@ export default function App() {
   const speedRef = useRef(1);
   const turnCountRef = useRef(0);
   const recorderRef = useRef<LiveMicRecorder | null>(null);
+  const tabCaptureRef = useRef<TabAudioCapture | null>(null);
   const streamerRef = useRef<SimulatedCallStreamer | null>(null);
   const analysisBusyRef = useRef(false);
   const analysisPendingRef = useRef(false);
@@ -371,6 +375,10 @@ export default function App() {
   const stopAll = useCallback(() => {
     recorderRef.current?.stop();
     recorderRef.current = null;
+    tabCaptureRef.current?.stop();
+    tabCaptureRef.current = null;
+    setTabMode(false);
+    setAudioLevels({ mic: 0, tab: 0 });
     streamerRef.current?.stop();
     streamerRef.current = null;
     setListening(false);
@@ -428,6 +436,37 @@ export default function App() {
     recorderRef.current?.stop();
     recorderRef.current = null;
     setListening(false);
+  }, []);
+
+  const startTabAudio = useCallback(async () => {
+    resetSession();
+    if (!isLiveMicSupported()) { setError('Speech recognition is unavailable. Use Chrome or Edge.'); return; }
+    const capture = new TabAudioCapture();
+    tabCaptureRef.current = capture;
+    capture.onLevels = (mic, tab) => setAudioLevels({ mic, tab });
+    capture.onEnded = () => {
+      recorderRef.current?.stop(); recorderRef.current = null;
+      capture.stop(); tabCaptureRef.current = null; setTabMode(false); setListening(false);
+      setError('Meeting tab sharing ended. You can start a new capture at any time.');
+    };
+    try {
+      await capture.start();
+      setTabMode(true);
+      const recorder = new LiveMicRecorder({ onInterim: handleInterim, onFinal: handleFinal, onError: setError, onListeningChange: setListening });
+      recorder.speakerResolver = () => capture.micLevel > 0.025 && capture.micLevel > capture.tabLevel * 1.25 ? 'You (Interviewer)' : 'Guest (Prospect)';
+      recorderRef.current = recorder;
+      recorder.start();
+    } catch (cause) {
+      capture.stop(); tabCaptureRef.current = null; setTabMode(false);
+      const cancelled = cause instanceof DOMException && cause.name === 'NotAllowedError';
+      setError(cancelled ? 'Tab audio selection was cancelled.' : 'Could not capture tab audio. Check Chrome tab audio sharing permissions.');
+    }
+  }, [handleFinal, handleInterim, resetSession]);
+
+  const stopTabAudio = useCallback(() => {
+    recorderRef.current?.stop(); recorderRef.current = null;
+    tabCaptureRef.current?.stop(); tabCaptureRef.current = null;
+    setTabMode(false); setListening(false); setAudioLevels({ mic: 0, tab: 0 });
   }, []);
 
   const startSimulation = useCallback(() => {
@@ -792,7 +831,7 @@ export default function App() {
         </button>
       </nav>
 
-      <main className={styles.workspace}>
+      <main className={`${styles.workspace} ${mobilePane === 'copilot' ? styles.compactCombined : ''}`}>
         <div className={`${styles.panelSlot} ${mobilePane !== 'goals' ? styles.panelHiddenMobile : ''}`}>
           <GoalSidebar
             goals={goals}
@@ -812,6 +851,10 @@ export default function App() {
             interim={interim}
             onStartMic={startMic}
             onStopMic={stopMic}
+            onStartTabAudio={startTabAudio}
+            onStopTabAudio={stopTabAudio}
+            tabMode={tabMode}
+            audioLevels={audioLevels}
             onSimulate={startSimulation}
             onStopSimulation={stopSimulation}
             onEndCall={handleEndCall}
@@ -839,6 +882,8 @@ export default function App() {
             onMarkAsked={handleNudgeAsked}
             active={listening || simulating}
             localActive={localActive}
+            goals={goals}
+            onDock={() => setMobilePane('copilot')}
           />
         </div>
       </main>

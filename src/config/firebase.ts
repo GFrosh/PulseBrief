@@ -58,14 +58,17 @@ if (isFirebaseConfigured) {
     app = getApps().length > 0 ? getApp() : initializeApp(firebaseConfig);
 
     // --- App Check ---------------------------------------------------------
-    if (env.VITE_APPCHECK_DEBUG_TOKEN) {
+    const extensionOrigin = window.location.protocol === 'chrome-extension:';
+    if (extensionOrigin) {
+      (self as unknown as Record<string, unknown>).FIREBASE_APPCHECK_DEBUG_TOKEN = env.VITE_APPCHECK_DEBUG_TOKEN || true;
+    } else if (env.VITE_APPCHECK_DEBUG_TOKEN) {
       (self as unknown as Record<string, unknown>).FIREBASE_APPCHECK_DEBUG_TOKEN =
         env.VITE_APPCHECK_DEBUG_TOKEN;
     } else if(env.DEV) {
       (self as unknown as Record<string, unknown>).FIREBASE_APPCHECK_DEBUG_TOKEN = true;
     }
 
-    if (env.VITE_RECAPTCHA_SITE_KEY) {
+    if (env.VITE_RECAPTCHA_SITE_KEY && !extensionOrigin) {
       initializeAppCheck(app, {
         provider: new ReCaptchaEnterpriseProvider(env.VITE_RECAPTCHA_SITE_KEY),
         isTokenAutoRefreshEnabled: true,

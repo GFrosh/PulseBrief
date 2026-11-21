@@ -1,0 +1,9 @@
+{
+  "manifest_version": 3,
+  "name": "PulseBrief — Hybrid AI Call Co-Pilot",
+  "version": "1.0.0",
+  "permissions": ["sidePanel", "tabCapture", "activeTab"],
+  "side_panel": { "default_path": "index.html" },
+  "action": { "default_title": "Open PulseBrief Co-Pilot" },
+  "background": { "service_worker": "background.js", "type": "module" }
+}

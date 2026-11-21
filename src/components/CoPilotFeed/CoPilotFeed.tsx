@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState } from 'react';
-import type { ActivityEntry, CoPilotNudge, NudgeTrigger } from '../../types/session';
+import { createPortal } from 'react-dom';
+import type { ActivityEntry, CoPilotNudge, NudgeTrigger, SessionGoal } from '../../types/session';
 import styles from './CoPilotFeed.module.css';
 
 interface CoPilotFeedProps {
@@ -9,6 +10,8 @@ interface CoPilotFeedProps {
   onMarkAsked: (nudgeId: string) => void;
   active: boolean;
   localActive: boolean;
+  goals: SessionGoal[];
+  onDock: () => void;
 }
 
 const TRIGGER_COPY: Record<NudgeTrigger, { label: string; tone: string }> = {
@@ -168,7 +171,19 @@ function NudgeCard({
   );
 }
 
-export default function CoPilotFeed({ nudges, activity, onDismiss, onMarkAsked, active, localActive }: CoPilotFeedProps) {
+export default function CoPilotFeed({ nudges, activity, onDismiss, onMarkAsked, active, localActive, goals, onDock }: CoPilotFeedProps) {
+  const [pipWindow, setPipWindow] = useState<Window | null>(null);
+  const pipApi = (window as Window & { documentPictureInPicture?: { requestWindow(options: { width: number; height: number }): Promise<Window> } }).documentPictureInPicture;
+  const popOut = async () => {
+    if (!pipApi) return;
+    const next = await pipApi.requestWindow({ width: 390, height: 540 });
+    document.head.querySelectorAll('style, link[rel="stylesheet"]').forEach((node) => next.document.head.appendChild(node.cloneNode(true)));
+    next.document.documentElement.dataset.theme = document.documentElement.dataset.theme;
+    const observer = new MutationObserver(() => { next.document.documentElement.dataset.theme = document.documentElement.dataset.theme; });
+    observer.observe(document.documentElement, { attributes: true, attributeFilter: ['data-theme'] });
+    next.addEventListener('pagehide', () => { observer.disconnect(); setPipWindow(null); onDock(); }, { once: true });
+    setPipWindow(next);
+  };
   const logRef = useRef<HTMLDivElement>(null);
   const visible = nudges.filter((nudge) => !nudge.dismissed);
 
@@ -186,6 +201,7 @@ export default function CoPilotFeed({ nudges, activity, onDismiss, onMarkAsked, 
             <span className={styles.engineDot} aria-hidden="true" />
             {localActive ? 'on-device' : 'cloud'}
           </span>
+          {pipApi && <button type="button" className={styles.action} onClick={() => void popOut()}>Pop Out Nudges</button>}
         </div>
         <p className={styles.subtitle}>Follow-ups surfaced before you need them</p>
       </header>
@@ -245,6 +261,11 @@ export default function CoPilotFeed({ nudges, activity, onDismiss, onMarkAsked, 
           )}
         </div>
       </section>
+      {pipWindow && createPortal(<main style={{ padding: 16, height: '100%', overflow: 'auto', background: 'var(--bg)', color: 'var(--text)', fontFamily: 'var(--font-sans)' }}>
+        <header style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}><strong>PulseBrief Co-pilot</strong><button onClick={() => { pipWindow.close(); setPipWindow(null); onDock(); }}>Dock Back</button></header>
+        <p>{localActive ? '⚡ Nano Active' : navigator.onLine ? '☁ Cloud' : '📴 Offline'}</p>
+        <section><strong>{goals.filter((g) => g.status === 'covered').length}/{goals.length} Goals Covered</strong><div style={{ display: 'flex', gap: 4, margin: '8px 0' }}>{goals.map((g) => <i key={g.id} style={{ height: 4, flex: 1, background: g.status === 'covered' ? 'var(--color-local)' : 'var(--surface-3)' }} />)}</div><div style={{ display: 'flex', gap: 5, flexWrap: 'wrap' }}>{goals.map((g) => <span key={g.id} style={{ padding: '4px 8px', borderRadius: 12, background: 'var(--surface-2)', fontSize: 11 }}>{g.status === 'covered' ? '✅' : '⏳'} {g.text}</span>)}</div></section>
+        <h3>Follow-up nudges</h3>{nudges.filter((n) => !n.dismissed).map((n) => <article key={n.id} style={{ padding: 12, marginBottom: 10, border: '1px solid var(--border)', borderRadius: 12, background: 'var(--surface-1)' }}><p>{n.suggestedQuestion}</p><button onClick={() => void (pipWindow.navigator.clipboard?.writeText(n.suggestedQuestion).catch(() => navigator.clipboard.writeText(n.suggestedQuestion)))}>Copy</button> <button onClick={() => onMarkAsked(n.id)}>Mark Asked ✓</button> <button onClick={() => onDismiss(n.id)}>Dismiss</button></article>)}</main>, pipWindow.document.body)}
     </aside>
   );
 }
