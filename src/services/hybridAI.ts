@@ -787,6 +787,9 @@ export async function evaluateLiveGoals(
   routingMode: RoutingMode,
   nanoStatus: NanoAvailability = 'AVAILABLE',
 ): Promise<InferenceResult<GoalUpdatePayload>> {
+  if (goals.length === 0) {
+    return { data: { updates: [] }, meta: { source: 'LOCAL_NANO', latencyMs: 0, tokens: 0 } };
+  }
   const pending = goals.filter((goal) => goal.status !== 'covered');
   if (!pending.length || !recentTranscript.trim()) {
     return {
@@ -986,7 +989,9 @@ export async function synthesizePostCallBrief(
     '  "followUpEmailDraft": "full email with Subject line, greeting, 3 short paragraphs or bullets, and a clear ask"',
     '}',
     '',
-    `GOAL OUTCOMES:\n${goals.map((goal) => `- ${goal.text} => ${goal.status}${goal.evidenceSnippet ? ` ("${goal.evidenceSnippet}")` : ''}`).join('\n')}`,
+    `GOAL OUTCOMES:\n${goals.length
+      ? goals.map((goal) => `- ${goal.text} => ${goal.status}${goal.evidenceSnippet ? ` ("${goal.evidenceSnippet}")` : ''}`).join('\n')
+      : '- Open call with no preset goals. Derive the brief, CRM fields, and email solely from transcript evidence.'}`,
     '',
     `SANITIZED TRANSCRIPT:\n${sanitizedTranscript}`,
   ].join('\n');

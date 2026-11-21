@@ -47,6 +47,7 @@ import styles from './App.module.css';
 
 type ModalPhase = 'ready' | 'redacting' | 'cloud';
 type MobilePane = 'transcript' | 'goals' | 'copilot';
+const OPEN_CALL_ID = 'OPEN_FREEFORM';
 
 const makeId = (prefix: string): string =>
   `${prefix}_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 7)}`;
@@ -74,16 +75,14 @@ const CAPTURE_MODE =
   typeof window !== 'undefined' && new URLSearchParams(window.location.search).get('capture') === '1';
 
 export default function App() {
-  const initialScenario = getScenario(INITIAL_SCENARIO_ID);
-
   const [mobilePane, setMobilePane] = useState<MobilePane>('transcript');
   const [theme, setTheme] = useState<'dark' | 'light'>(() => {
     const saved = window.localStorage.getItem('pulsebrief-theme');
     if (saved === 'dark' || saved === 'light') return saved;
     return window.matchMedia('(prefers-color-scheme: light)').matches ? 'light' : 'dark';
   });
-  const [scenarioId, setScenarioId] = useState<string>(INITIAL_SCENARIO_ID);
-  const [goals, setGoals] = useState<SessionGoal[]>(() => seedGoals(initialScenario));
+  const [scenarioId, setScenarioId] = useState<string>(OPEN_CALL_ID);
+  const [goals, setGoals] = useState<SessionGoal[]>([]);
   const [segments, setSegments] = useState<TranscriptSegment[]>([]);
   const [interim, setInterim] = useState<{ speaker: Speaker; text: string } | null>(null);
   const [nudges, setNudges] = useState<CoPilotNudge[]>([]);
@@ -120,7 +119,7 @@ export default function App() {
   const [redactionCount, setRedactionCount] = useState(0);
   const [syncStatus, setSyncStatus] = useState<SyncStatus>('SAVING');
 
-  const scenario = getScenario(scenarioId);
+  const scenario = getScenario(scenarioId === OPEN_CALL_ID ? INITIAL_SCENARIO_ID : scenarioId);
 
   const goalsRef = useRef(goals);
   const segmentsRef = useRef<TranscriptSegment[]>(segments);
@@ -605,9 +604,9 @@ export default function App() {
         goalsRef.current,
         telemetryRef.current,
         {
-          company: scenario.company,
-          contact: scenario.contact,
-          role: scenario.role,
+          company: scenarioId === OPEN_CALL_ID ? 'Open Call' : scenario.company,
+          contact: scenarioId === OPEN_CALL_ID ? 'Guest' : scenario.contact,
+          role: scenarioId === OPEN_CALL_ID ? 'Freeform conversation' : scenario.role,
           rawTranscript: fullTranscript,
           redactionCount: redaction.data.redactionCount,
         },
@@ -642,7 +641,7 @@ export default function App() {
     } finally {
       synthBusyRef.current = false;
     }
-  }, [applyTelemetry, authSession.uid, pushActivity, recordCall, scenario, stopAll]);
+  }, [applyTelemetry, authSession.uid, pushActivity, recordCall, scenario, scenarioId, stopAll]);
 
   const endCallRef = useRef(handleEndCall);
   endCallRef.current = handleEndCall;
@@ -662,9 +661,10 @@ export default function App() {
   }, []);
 
   const handleAddGoal = useCallback(() => {
+    if (goalsRef.current.length >= 5) return;
     const goal: SessionGoal = {
       id: makeId('goal'),
-      text: 'New goal — click the text to edit',
+      text: 'New goal — click the edit icon',
       status: 'pending',
     };
     setGoals((previous) => {
@@ -700,7 +700,7 @@ export default function App() {
   }, []);
 
   const handleResetGoals = useCallback(() => {
-    const next = seedGoals(getScenario(scenarioId));
+    const next = scenarioId === OPEN_CALL_ID ? [] : seedGoals(getScenario(scenarioId));
     goalsRef.current = next;
     setGoals(next);
   }, [scenarioId]);
@@ -709,7 +709,7 @@ export default function App() {
     (nextScenarioId: string) => {
       resetSession();
       setScenarioId(nextScenarioId);
-      const next = seedGoals(getScenario(nextScenarioId));
+      const next = nextScenarioId === OPEN_CALL_ID ? [] : seedGoals(getScenario(nextScenarioId));
       goalsRef.current = next;
       setGoals(next);
     },
@@ -918,8 +918,8 @@ export default function App() {
             canSynthesize={segments.length > 0}
             synthesizing={phase === 'redacting' || phase === 'cloud'}
             elapsedLabel={formatElapsed(elapsed)}
-            sessionTitle={scenario.company}
-            sessionMeta={`${scenario.contact} · ${scenario.role}`}
+            sessionTitle={scenarioId === OPEN_CALL_ID ? 'Open / Freeform Call' : scenario.company}
+            sessionMeta={scenarioId === OPEN_CALL_ID ? 'No preset goals' : `${scenario.contact} · ${scenario.role}`}
             scriptedSeconds={scriptedSeconds}
             error={error}
             onDismissError={() => setError(null)}

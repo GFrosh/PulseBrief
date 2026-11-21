@@ -100,6 +100,7 @@ export default function GoalSidebar({
             value={scenarioId}
             onChange={(event) => onScenarioChange(event.target.value)}
           >
+            <option value="OPEN_FREEFORM">Open / Freeform Call (No Preset)</option>
             {SCENARIOS.map((scenario) => (
               <option key={scenario.id} value={scenario.id}>
                 {scenario.label}
@@ -120,7 +121,11 @@ export default function GoalSidebar({
       </div>
 
       <div className={styles.list} role="list">
-        {goals.map((goal, index) => {
+        {goals.length === 0 ? (
+          <p className={styles.emptyState}>
+            No rigid agenda — PulseBrief is listening dynamically for follow-up opportunities, or add a custom goal below.
+          </p>
+        ) : goals.map((goal, index) => {
           const isEditing = editingId === goal.id;
           return (
             <article
@@ -183,8 +188,8 @@ export default function GoalSidebar({
                 <button
                   type="button"
                   className={styles.goalText}
-                  onClick={() => (onToggleGoal ? onToggleGoal(goal.id) : startEdit(goal))}
-                  title={onToggleGoal ? 'Toggle covered manually' : 'Edit goal'}
+                  onClick={() => (goal.text.startsWith('New goal') ? startEdit(goal) : onToggleGoal ? onToggleGoal(goal.id) : startEdit(goal))}
+                  title={goal.text.startsWith('New goal') ? 'Edit goal' : onToggleGoal ? 'Toggle covered manually' : 'Edit goal'}
                 >
                   {goal.text}
                 </button>
@@ -214,7 +219,7 @@ export default function GoalSidebar({
       </div>
 
       <div className={styles.footer}>
-        <button type="button" className={styles.addButton} onClick={onAddGoal}>
+        <button type="button" className={styles.addButton} onClick={onAddGoal} disabled={goals.length >= 5} title={goals.length >= 5 ? 'A maximum of five goals can be tracked' : 'Add a custom goal'}>
           <svg viewBox="0 0 14 14" width="11" height="11" aria-hidden="true">
             <path d="M7 2.5v9M2.5 7h9" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" />
           </svg>

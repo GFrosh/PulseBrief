@@ -1,5 +1,5 @@
-import { collection, deleteDoc, doc, getDocs, limit, orderBy, query, setDoc } from 'firebase/firestore';
-import { db, ensureSignedIn, isFirebaseConfigured } from '../config/firebase';
+import { collection, deleteDoc, doc, getDocs, query, setDoc, where } from 'firebase/firestore';
+import { auth, db, ensureSignedIn, isFirebaseConfigured } from '../config/firebase';
 import type { PostCallBrief, SyncStatus } from '../types/session';
 
 /**
@@ -55,7 +55,9 @@ export function listLocalSessions(ownerUid?: string): StoredSession[] {
  */
 export async function saveSession(brief: PostCallBrief, ownerUid?: string): Promise<SyncStatus> {
   const id = `session_${Date.now()}_${brief.title.slice(0, 12).replace(/\W+/g, '')}`;
-  const resolvedUid = ownerUid ?? (await ensureSignedIn()) ?? undefined;
+  const signedInUid = await ensureSignedIn().catch(() => null);
+  const authenticatedUid = signedInUid && auth?.currentUser?.uid === signedInUid ? signedInUid : null;
+  const resolvedUid = authenticatedUid ?? ownerUid ?? signedInUid ?? undefined;
   const record: StoredSession = {
     id,
     savedAt: new Date().toISOString(),
@@ -67,11 +69,15 @@ export async function saveSession(brief: PostCallBrief, ownerUid?: string): Prom
 
   if (!isFirebaseConfigured || !db) return 'LOCAL_ONLY';
 
+  // Extension/offline fallback IDs are local identities, not Firebase Auth users.
+  if (!authenticatedUid) {
+    return 'LOCAL_ONLY';
+  }
+
   if (typeof navigator !== 'undefined' && !navigator.onLine) return 'QUEUED_OFFLINE';
 
   try {
-    const uid = resolvedUid ?? (await ensureSignedIn());
-    if (!uid) return 'LOCAL_ONLY';
+    const uid = signedInUid;
     await setDoc(doc(db, COLLECTION, id), {
       ownerUid: uid,
       savedAt: record.savedAt,
@@ -87,12 +93,15 @@ export async function saveSession(brief: PostCallBrief, ownerUid?: string): Prom
 
 /** Recent briefs for the current identity (best-effort; local cache always works). */
 export async function listSessions(ownerUid?: string): Promise<StoredSession[]> {
-  if (!isFirebaseConfigured || !db || (typeof navigator !== 'undefined' && !navigator.onLine)) {
+  if (!isFirebaseConfigured || !db) {
     return listLocalSessions(ownerUid);
   }
   try {
+    const uid = await ensureSignedIn();
+    if (!uid || auth?.currentUser?.uid !== uid) return listLocalSessions(ownerUid ?? uid ?? undefined);
+    if (typeof navigator !== 'undefined' && !navigator.onLine) return listLocalSessions(ownerUid ?? uid);
     const snapshot = await getDocs(
-      query(collection(db, COLLECTION), orderBy('savedAt', 'desc'), limit(20)),
+      query(collection(db, COLLECTION), where('ownerUid', '==', uid)),
     );
     const remote = snapshot.docs
       .map((entry) => {
@@ -107,7 +116,9 @@ export async function listSessions(ownerUid?: string): Promise<StoredSession[]> 
         };
         return session;
       })
-      .filter((entry): entry is StoredSession => entry !== null);
+      .filter((entry): entry is StoredSession => entry !== null)
+      .sort((a, b) => b.savedAt.localeCompare(a.savedAt))
+      .slice(0, 20);
 
     return remote.length > 0 ? remote : listLocalSessions(ownerUid);
   } catch (error) {
@@ -122,6 +133,8 @@ export async function deleteSession(sessionId: string): Promise<void> {
     return;
   }
   try {
+    const uid = await ensureSignedIn();
+    if (!uid || auth?.currentUser?.uid !== uid) return;
     await deleteDoc(doc(db, COLLECTION, sessionId));
   } catch (error) {
     console.warn('[PulseBrief] Firestore delete failed — removed from local cache.', error);
