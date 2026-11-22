@@ -25,20 +25,27 @@
   min-width: 0;
 }
 
-.speakerMode {
+.audioMeters {
+  display: grid;
+  grid-template-columns: auto minmax(48px, 100px) auto minmax(48px, 100px);
+  align-items: center;
+  gap: 5px 8px;
   margin-top: 8px;
-  padding: 4px 8px;
-  border: 1px solid var(--border);
-  border-radius: var(--radius-pill);
-  background: var(--surface-2);
-  color: var(--text-secondary);
-  font-size: 10px;
-  cursor: pointer;
+  color: var(--text-tertiary);
+  font-size: 9.5px;
 }
-
-.audioMeters { display: grid; grid-template-columns: auto minmax(50px, 100px) auto minmax(50px, 100px); align-items: center; gap: 5px 8px; margin-top: 8px; color: var(--text-tertiary); font-size: 9px; }
-.audioMeters i { height: 4px; overflow: hidden; border-radius: 9px; background: var(--surface-3); }
-.audioMeters b { display: block; height: 100%; border-radius: inherit; transition: width 90ms linear; }
+.audioMeters i {
+  height: 4px;
+  overflow: hidden;
+  border-radius: 9px;
+  background: var(--surface-3);
+}
+.audioMeters b {
+  display: block;
+  height: 100%;
+  border-radius: inherit;
+  transition: width 90ms linear;
+}
 
 .titleRow {
   display: flex;
@@ -678,7 +685,7 @@
   }
 }
 
-@media (max-width: 720px) {
+@media (max-width: 767px) {
   .header,
   .controls {
     padding-inline: 14px;
@@ -695,7 +702,8 @@
   .guest {
     margin-left: 0;
   }
-  .footerItem:nth-child(3) {
+  .footerItem:nth-child(3),
+  .footerDivider {
     display: none;
   }
 
@@ -703,23 +711,34 @@
     gap: 8px;
   }
 
+  .audioMeters {
+    grid-template-columns: auto 1fr;
+    gap: 4px 8px;
+  }
+
   .controls {
     align-items: stretch;
   }
 
   .controlGroup {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
     width: 100%;
+    gap: 8px;
   }
 
   .micButton,
   .simButton,
   .endButton,
   .speedOption {
-    min-height: 44px;
+    min-height: 42px;
+    justify-content: center;
   }
 
   .speedToggle {
-    min-height: 44px;
+    min-height: 42px;
+    display: grid;
+    grid-template-columns: 1fr 1fr;
   }
 
   .speedOption {
@@ -764,15 +783,8 @@
     white-space: normal;
   }
 
-  .controlGroup,
-  .controls {
-    gap: 8px;
-  }
-
-  .micButton,
-  .simButton {
-    flex: 1;
-    justify-content: center;
+  .controlGroup {
+    grid-template-columns: minmax(0, 1fr);
   }
 
   .segmentHead {
