@@ -28,6 +28,13 @@ interface LiveTranscriptProps {
   scriptedSeconds: number;
   error: string | null;
   onDismissError: () => void;
+  extensionOrigin: boolean;
+  enableMicPrompt: boolean;
+  onEnableMic: () => void;
+  micGrantNotice: string;
+  speakerMode: Speaker | null;
+  onCycleSpeakerMode: () => void;
+  onFlipSpeaker: (id: string) => void;
 }
 
 const SPEEDS = [1, 2.5];
@@ -70,15 +77,31 @@ export default function LiveTranscript({
   scriptedSeconds,
   error,
   onDismissError,
+  extensionOrigin,
+  enableMicPrompt,
+  onEnableMic,
+  micGrantNotice,
+  speakerMode,
+  onCycleSpeakerMode,
+  onFlipSpeaker,
 }: LiveTranscriptProps) {
   const scrollRef = useRef<HTMLDivElement>(null);
+  const scrollFrameRef = useRef<number | null>(null);
   const [pinned, setPinned] = useState(true);
 
   useEffect(() => {
     if (!pinned) return;
-    const node = scrollRef.current;
-    if (node) node.scrollTop = node.scrollHeight;
+    if (scrollFrameRef.current !== null) cancelAnimationFrame(scrollFrameRef.current);
+    scrollFrameRef.current = requestAnimationFrame(() => {
+      const node = scrollRef.current;
+      if (node) node.scrollTop = node.scrollHeight;
+      scrollFrameRef.current = null;
+    });
   }, [segments, interim, pinned]);
+
+  useEffect(() => () => {
+    if (scrollFrameRef.current !== null) cancelAnimationFrame(scrollFrameRef.current);
+  }, []);
 
   const handleScroll = () => {
     const node = scrollRef.current;
@@ -112,6 +135,9 @@ export default function LiveTranscript({
             <span>You (Mic)</span><i><b style={{ width: `${Math.max(3, audioLevels.mic * 100)}%`, background: 'var(--color-local)' }} /></i>
             <span>Prospect (Tab)</span><i><b style={{ width: `${Math.max(3, audioLevels.tab * 100)}%`, background: 'var(--color-cloud)' }} /></i>
           </div>}
+          <button type="button" className={styles.speakerMode} onClick={onCycleSpeakerMode} aria-label="Cycle active speaker override">
+            🎙️ Speaking: {speakerMode ?? 'Auto (You / Guest)'}
+          </button>
         </div>
 
         <div className={styles.stats}>
@@ -232,6 +258,12 @@ export default function LiveTranscript({
         </div>
       )}
 
+      {extensionOrigin && enableMicPrompt && <div className={styles.errorBanner} role="status">
+        <span>Chrome needs microphone access granted from a full browser tab first.</span>
+        <button type="button" onClick={onEnableMic}>Enable Extension Mic</button>
+      </div>}
+      {micGrantNotice && <div className={styles.errorBanner} role="status">{micGrantNotice}</div>}
+
       <div className={styles.feed} ref={scrollRef} onScroll={handleScroll}>
         {segments.length === 0 && !interim ? (
           <div className={styles.empty}>
@@ -283,12 +315,12 @@ export default function LiveTranscript({
                   className={`${styles.segment} ${isYou ? styles.you : styles.guest} ${highlighted ? styles.highlighted : ''}`}
                 >
                   <div className={styles.segmentHead}>
-                    <span className={styles.speakerChip}>
+                    <button type="button" className={styles.speakerChip} onClick={() => onFlipSpeaker(segment.id)} title="Click to flip this transcript speaker">
                       <span className={`${styles.avatar} ${isYou ? styles.avatarYou : styles.avatarGuest}`} aria-hidden="true">
                         {isYou ? 'Y' : 'G'}
                       </span>
                       {segment.speaker}
-                    </span>
+                    </button>
                     <span className={styles.time}>{formatTime(segment.timestamp)}</span>
                     {highlighted && (
                       <span className={styles.matchChip} title="Cited as evidence for a session goal">
@@ -332,9 +364,13 @@ export default function LiveTranscript({
                 type="button"
                 className={styles.jumpButton}
                 onClick={() => {
-                  const node = scrollRef.current;
-                  if (node) node.scrollTop = node.scrollHeight;
                   setPinned(true);
+                  if (scrollFrameRef.current !== null) cancelAnimationFrame(scrollFrameRef.current);
+                  scrollFrameRef.current = requestAnimationFrame(() => {
+                    const node = scrollRef.current;
+                    if (node) node.scrollTop = node.scrollHeight;
+                    scrollFrameRef.current = null;
+                  });
                 }}
               >
                 Jump to live

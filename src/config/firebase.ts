@@ -34,6 +34,7 @@ import { initializeAppCheck, ReCaptchaEnterpriseProvider } from 'firebase/app-ch
  */
 
 const env = import.meta.env;
+export const isExtensionOrigin = typeof window !== 'undefined' && window.location.protocol === 'chrome-extension:';
 
 export const firebaseConfig = {
   apiKey: env.VITE_FIREBASE_API_KEY ?? '',
@@ -58,7 +59,7 @@ if (isFirebaseConfigured) {
     app = getApps().length > 0 ? getApp() : initializeApp(firebaseConfig);
 
     // --- App Check ---------------------------------------------------------
-    const extensionOrigin = window.location.protocol === 'chrome-extension:';
+    const extensionOrigin = isExtensionOrigin;
     if (extensionOrigin) {
       (self as unknown as Record<string, unknown>).FIREBASE_APPCHECK_DEBUG_TOKEN = env.VITE_APPCHECK_DEBUG_TOKEN || true;
     } else if (env.VITE_APPCHECK_DEBUG_TOKEN) {
@@ -117,6 +118,7 @@ const GUEST_KEY = 'pulsebrief.guestId';
 const LOCAL_PROFILE_KEY = 'pulsebrief.localProfile';
 
 export function getGuestId(): string {
+  if (isExtensionOrigin) return getExtensionGuestId();
   try {
     const existing = localStorage.getItem(GUEST_KEY);
     if (existing) return existing;
@@ -185,12 +187,15 @@ export function ensureSignedIn(): Promise<string | null> {
 
   if (auth.currentUser) return Promise.resolve(auth.currentUser.uid);
 
+  if (isExtensionOrigin) return Promise.resolve(getExtensionGuestId());
+
   if (!signInPromise) {
     signInPromise = signInAnonymously(auth)
       .then((credential) => credential.user.uid)
       .catch((error: unknown) => {
         console.warn('[PulseBrief] Anonymous auth unavailable — using local guest id.', error);
-        return getGuestId();
+        const code = error instanceof FirebaseError ? error.code : '';
+        return isExtensionAuthError(code) ? getExtensionGuestId() : getGuestId();
       })
       .finally(() => {
         signInPromise = null;
@@ -198,6 +203,23 @@ export function ensureSignedIn(): Promise<string | null> {
   }
 
   return signInPromise;
+}
+
+function isExtensionAuthError(code: string): boolean {
+  return code === 'auth/unauthorized-domain' || code === 'auth/operation-not-allowed';
+}
+
+function getExtensionGuestId(): string {
+  const key = 'pulsebrief_ext_uid';
+  try {
+    const existing = localStorage.getItem(key);
+    if (existing) return existing;
+    const created = `local_ext_${typeof crypto.randomUUID === 'function' ? crypto.randomUUID() : Math.random().toString(36).slice(2)}`;
+    localStorage.setItem(key, created);
+    return created;
+  } catch {
+    return 'local_ext_guest';
+  }
 }
 
 export async function signInWithGoogleAccount(): Promise<AuthSession> {

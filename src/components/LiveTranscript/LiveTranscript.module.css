@@ -414,7 +414,12 @@
   font-weight: 600;
   letter-spacing: 0.015em;
   color: var(--text-secondary);
+  padding: 0;
+  border: 0;
+  background: transparent;
+  cursor: pointer;
 }
+.speakerChip:hover { color: var(--text); }
 
 .avatar {
   display: grid;
