@@ -1,5 +1,5 @@
 import { collection, deleteDoc, doc, getDocs, query, setDoc, where } from 'firebase/firestore';
-import { auth, db, ensureSignedIn, isFirebaseConfigured } from '../config/firebase';
+import { auth, db, ensureSignedIn, firebaseConfig, isFirebaseConfigured } from '../config/firebase';
 import type { PostCallBrief, SyncStatus } from '../types/session';
 
 /**
@@ -122,7 +122,11 @@ export async function listSessions(ownerUid?: string): Promise<StoredSession[]> 
 
     return remote.length > 0 ? remote : listLocalSessions(ownerUid);
   } catch (error) {
-    console.warn('[PulseBrief] Firestore read failed — showing local sessions.', error);
+    const code = (error as { code?: string })?.code ?? 'unknown';
+    console.warn(
+      `[PulseBrief] Firestore read failed (${code}) in project ${firebaseConfig.projectId || '(unconfigured)'} — check the deployed sessions/ownerUid rule and Firestore App Check enforcement. Showing local sessions.`,
+      error,
+    );
     return listLocalSessions(ownerUid);
   }
 }

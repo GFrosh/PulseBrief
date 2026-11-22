@@ -729,6 +729,23 @@ export default function App() {
     setNudges((previous) => previous.map((nudge) => (nudge.id === nudgeId ? { ...nudge, asked: true } : nudge)));
   }, []);
 
+  const handleBriefModalClose = useCallback(() => setModalOpen(false), []);
+  const handleAccountModalClose = useCallback(() => {
+    setAccountModalOpen(false);
+    void listSessions(authSession.uid).then((items) => setSavedCount(items.length));
+  }, [authSession.uid]);
+  const handleAccountSessionChange = useCallback((nextSession: AuthSession) => {
+    setAuthSession(nextSession);
+    void listSessions(nextSession.uid).then((items) => setSavedCount(items.length));
+  }, []);
+  const handleOpenSavedBrief = useCallback((selectedBrief: PostCallBrief) => {
+    setBrief(selectedBrief);
+    setRedactionCount(selectedBrief.redactionCount);
+    setSyncStatus(selectedBrief.syncStatus);
+    setPhase('ready');
+    setModalOpen(true);
+  }, []);
+
   /* --- Judge deep links (?seed=1&brief=1) -------------------------------- */
 
   useEffect(() => {
@@ -950,28 +967,16 @@ export default function App() {
         brief={brief}
         redactionCount={redactionCount}
         syncStatus={syncStatus}
-        onClose={() => setModalOpen(false)}
+        onClose={handleBriefModalClose}
       />
 
       <AccountAndHistoryModal
         open={accountModalOpen}
         initialTab={accountModalTab}
         session={authSession}
-        onSessionChange={(nextSession) => {
-          setAuthSession(nextSession);
-          listSessions(nextSession.uid).then((items) => setSavedCount(items.length));
-        }}
-        onOpenBrief={(selectedBrief) => {
-          setBrief(selectedBrief);
-          setRedactionCount(selectedBrief.redactionCount);
-          setSyncStatus(selectedBrief.syncStatus);
-          setPhase('ready');
-          setModalOpen(true);
-        }}
-        onClose={() => {
-          setAccountModalOpen(false);
-          listSessions(authSession.uid).then((items) => setSavedCount(items.length));
-        }}
+        onSessionChange={handleAccountSessionChange}
+        onOpenBrief={handleOpenSavedBrief}
+        onClose={handleAccountModalClose}
       />
 
       <p className={styles.bootNote} aria-hidden="true">
