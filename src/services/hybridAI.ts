@@ -917,9 +917,12 @@ export async function generateLiveFollowUpNudge(
 
 export async function redactPiiLocally(
   fullTranscript: string,
-  routingMode: RoutingMode,
+  _routingMode: RoutingMode,
   nanoStatus: NanoAvailability = 'AVAILABLE',
 ): Promise<InferenceResult<RedactionOutcome>> {
+  // Remove the deterministic PII set before Nano sees the text. This also
+  // guarantees the raw transcript never reaches Cloud Gemini, even in FORCE_CLOUD.
+  const firstPass = applyDeterministicRedaction(fullTranscript);
   const prompt = [
     'You are the privacy gate inside PulseBrief, running entirely on-device with Gemini Nano.',
     'Mask every personal or account-identifying entity in the transcript:',
@@ -930,15 +933,15 @@ export async function redactPiiLocally(
     'Preserve every other word, including punctuation and speaker labels. Never summarise.',
     'Respond with JSON only: {"sanitizedTranscript":"...","entities":["EMAIL","PHONE"]}',
     '',
-    `TRANSCRIPT:\n${fullTranscript}`,
+    `TRANSCRIPT:\n${firstPass.sanitizedTranscript}`,
   ].join('\n');
 
-  const remote = await runModel<RedactionOutcome>(routingMode, nanoStatus, prompt, (raw) => {
+  const remote = await runModel<RedactionOutcome>('FORCE_LOCAL', nanoStatus, prompt, (raw) => {
     const parsed = safeParseModelJson<{ sanitizedTranscript?: string; entities?: string[] }>(raw, {});
     if (!parsed || typeof parsed.sanitizedTranscript !== 'string') return null;
     // Guard against a truncated or summarised rewrite: the sanitized text must
     // stay comparable in length to the source, or we discard it.
-    if (parsed.sanitizedTranscript.length < fullTranscript.length * 0.6) return null;
+    if (parsed.sanitizedTranscript.length < firstPass.sanitizedTranscript.length * 0.6) return null;
     return { sanitizedTranscript: parsed.sanitizedTranscript, redactionCount: 0, entities: parsed.entities ?? [] };
   });
 
@@ -947,12 +950,16 @@ export async function redactPiiLocally(
 
   // The regex pass ALWAYS runs — even on a model response. Belt and braces:
   // a conservative Nano must never be the reason an email reaches the cloud.
-  const base = remote?.data.sanitizedTranscript ?? fullTranscript;
+  const base = remote?.data.sanitizedTranscript ?? firstPass.sanitizedTranscript;
   const safetyPass = applyDeterministicRedaction(base);
   const source: InferenceSource = remote ? remote.source : 'DEMO_ENGINE';
 
   return {
-    data: safetyPass,
+    data: {
+      sanitizedTranscript: safetyPass.sanitizedTranscript,
+      redactionCount: firstPass.redactionCount + safetyPass.redactionCount,
+      entities: [...firstPass.entities, ...safetyPass.entities],
+    },
     meta: {
       source,
       latencyMs: remote ? remote.latencyMs : simulatedLatency,

@@ -1,5 +1,5 @@
 import { collection, deleteDoc, doc, getDocs, query, setDoc, where } from 'firebase/firestore';
-import { auth, db, ensureSignedIn, firebaseConfig, isFirebaseConfigured } from '../config/firebase';
+import { auth, db, ensureSignedIn, firebaseConfig, firebaseMeta, isFirebaseConfigured } from '../config/firebase';
 import type { PostCallBrief, SyncStatus } from '../types/session';
 
 /**
@@ -46,7 +46,7 @@ function writeLocal(sessions: StoredSession[]): void {
 export function listLocalSessions(ownerUid?: string): StoredSession[] {
   const all = readLocal();
   if (!ownerUid) return all;
-  return all.filter((entry) => !entry.ownerUid || entry.ownerUid === ownerUid);
+  return all.filter((entry) => entry.ownerUid === ownerUid);
 }
 
 /**
@@ -54,40 +54,57 @@ export function listLocalSessions(ownerUid?: string): StoredSession[] {
  * Offline writes still land in the local cache and are queued by the SDK.
  */
 export async function saveSession(brief: PostCallBrief, ownerUid?: string): Promise<SyncStatus> {
-  const id = `session_${Date.now()}_${brief.title.slice(0, 12).replace(/\W+/g, '')}`;
+  const id = `session_${typeof crypto.randomUUID === 'function' ? crypto.randomUUID() : `${Date.now()}_${Math.random().toString(36).slice(2)}`}`;
   const signedInUid = await ensureSignedIn().catch(() => null);
   const authenticatedUid = signedInUid && auth?.currentUser?.uid === signedInUid ? signedInUid : null;
   const resolvedUid = authenticatedUid ?? ownerUid ?? signedInUid ?? undefined;
+  // Raw text stays in the active in-memory brief; history stores sanitized text only.
+  const savedBrief: PostCallBrief = { ...brief, rawTranscript: '', syncStatus: 'SAVING' };
   const record: StoredSession = {
     id,
     savedAt: new Date().toISOString(),
     ownerUid: resolvedUid,
-    brief,
+    brief: savedBrief,
   };
 
   writeLocal([record, ...readLocal()]);
 
-  if (!isFirebaseConfigured || !db) return 'LOCAL_ONLY';
+  const finishLocalSave = (status: SyncStatus) => {
+    writeLocal(readLocal().map((entry) => entry.id === id
+      ? { ...entry, brief: { ...entry.brief, syncStatus: status } }
+      : entry));
+    return status;
+  };
+
+  if (!isFirebaseConfigured || !db) return finishLocalSave('LOCAL_ONLY');
 
   // Extension/offline fallback IDs are local identities, not Firebase Auth users.
   if (!authenticatedUid) {
-    return 'LOCAL_ONLY';
+    return finishLocalSave('LOCAL_ONLY');
   }
-
-  if (typeof navigator !== 'undefined' && !navigator.onLine) return 'QUEUED_OFFLINE';
+  if (typeof navigator !== 'undefined' && !navigator.onLine && firebaseMeta.firestore !== 'persistent-local-cache') {
+    return finishLocalSave('LOCAL_ONLY');
+  }
 
   try {
     const uid = signedInUid;
-    await setDoc(doc(db, COLLECTION, id), {
+    const write = setDoc(doc(db, COLLECTION, id), {
       ownerUid: uid,
       savedAt: record.savedAt,
-      title: brief.title,
-      brief,
+      title: savedBrief.title,
+      brief: { ...savedBrief, syncStatus: 'SYNCED' },
     });
-    return 'SYNCED';
+    if (typeof navigator !== 'undefined' && !navigator.onLine) {
+      // Firestore's persistent cache queues this write; don't keep the UI waiting
+      // for its promise to resolve after the browser reconnects.
+      void write.catch((error) => console.warn('[PulseBrief] Queued Firestore write failed.', error));
+      return finishLocalSave('QUEUED_OFFLINE');
+    }
+    await write;
+    return finishLocalSave('SYNCED');
   } catch (error) {
     console.warn('[PulseBrief] Firestore write queued locally — will retry when online.', error);
-    return 'QUEUED_OFFLINE';
+    return finishLocalSave('QUEUED_OFFLINE');
   }
 }
 
@@ -120,7 +137,12 @@ export async function listSessions(ownerUid?: string): Promise<StoredSession[]> 
       .sort((a, b) => b.savedAt.localeCompare(a.savedAt))
       .slice(0, 20);
 
-    return remote.length > 0 ? remote : listLocalSessions(ownerUid);
+    const sessionsById = new Map<string, StoredSession>();
+    listLocalSessions(ownerUid).forEach((entry) => sessionsById.set(entry.id, entry));
+    remote.forEach((entry) => sessionsById.set(entry.id, entry));
+    return [...sessionsById.values()]
+      .sort((a, b) => b.savedAt.localeCompare(a.savedAt))
+      .slice(0, 20);
   } catch (error) {
     const code = (error as { code?: string })?.code ?? 'unknown';
     console.warn(
@@ -133,7 +155,7 @@ export async function listSessions(ownerUid?: string): Promise<StoredSession[]> 
 
 export async function deleteSession(sessionId: string): Promise<void> {
   writeLocal(readLocal().filter((entry) => entry.id !== sessionId));
-  if (!isFirebaseConfigured || !db || (typeof navigator !== 'undefined' && !navigator.onLine)) {
+  if (!isFirebaseConfigured || !db) {
     return;
   }
   try {

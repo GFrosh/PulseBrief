@@ -377,11 +377,6 @@
   transition: background var(--dur-base), border-color var(--dur-base);
 }
 
-/* Applied only to newly-added segments so re-renders never retrigger the animation. */
-.segmentEnter {
-  animation: riseIn 260ms var(--ease-out) both;
-}
-
 .you {
   background: rgba(99, 102, 241, 0.055);
   border-color: rgba(99, 102, 241, 0.12);

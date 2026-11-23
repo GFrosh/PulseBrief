@@ -1,9 +1,11 @@
 import { FirebaseError, initializeApp, getApp, getApps, type FirebaseApp } from 'firebase/app';
 import {
   GoogleAuthProvider,
+  EmailAuthProvider,
   createUserWithEmailAndPassword,
   getAuth,
   linkWithPopup,
+  linkWithCredential,
   onAuthStateChanged,
   signInAnonymously,
   signInWithEmailAndPassword,
@@ -12,6 +14,7 @@ import {
   signOut,
   type Auth,
   type User,
+  type UserCredential,
 } from 'firebase/auth';
 import {
   initializeFirestore,
@@ -53,6 +56,7 @@ let app: FirebaseApp | null = null;
 let auth: Auth | null = null;
 let db: Firestore | null = null;
 let appCheckReady = false;
+let firestoreMode: 'persistent-local-cache' | 'memory-cache' | 'localStorage' = 'localStorage';
 
 if (isFirebaseConfigured) {
   try {
@@ -89,10 +93,12 @@ if (isFirebaseConfigured) {
       db = initializeFirestore(app, {
         localCache: persistentLocalCache({ tabManager: persistentMultipleTabManager() }),
       });
+      firestoreMode = 'persistent-local-cache';
     } catch (cacheError) {
       console.warn('[PulseBrief] IndexedDB cache unavailable, falling back to memory cache.', cacheError);
       const { getFirestore } = await import('firebase/firestore');
       db = getFirestore(app);
+      firestoreMode = 'memory-cache';
     }
   } catch (error) {
     console.error('[PulseBrief] Firebase failed to initialize — running local-only.', error);
@@ -223,12 +229,9 @@ function getExtensionGuestId(): string {
 }
 
 export async function signInWithGoogleAccount(): Promise<AuthSession> {
-  if (!auth) {
-    throw new Error('Firebase Auth is not configured in this environment yet.');
-  }
-  const provider = new GoogleAuthProvider();
-  const credential = await signInWithPopup(auth, provider);
-  return toAuthSession(credential.user);
+  await signInWithGoogle();
+  if (!auth?.currentUser) throw new Error('Google sign-in did not return an authenticated user.');
+  return toAuthSession(auth.currentUser);
 }
 
 export async function signInWithEmailAccount(
@@ -251,9 +254,22 @@ export async function signInWithEmailAccount(
     writeLocalProfile(localSession);
     return localSession;
   }
-  const credential = createAccount
-    ? await createUserWithEmailAndPassword(auth, trimmed, password)
-    : await signInWithEmailAndPassword(auth, trimmed, password);
+  let credential: UserCredential;
+  if (createAccount && auth.currentUser?.isAnonymous) {
+    try {
+      credential = await linkWithCredential(
+        auth.currentUser,
+        EmailAuthProvider.credential(trimmed, password),
+      );
+    } catch (error) {
+      if ((error as FirebaseError).code !== 'auth/credential-already-in-use') throw error;
+      credential = await signInWithEmailAndPassword(auth, trimmed, password);
+    }
+  } else {
+    credential = createAccount
+      ? await createUserWithEmailAndPassword(auth, trimmed, password)
+      : await signInWithEmailAndPassword(auth, trimmed, password);
+  }
   return toAuthSession(credential.user);
 }
 
@@ -334,5 +350,5 @@ export const firebaseMeta = {
   projectId: firebaseConfig.projectId || null,
   appCheck: appCheckReady,
   authMode: auth ? 'firebase-auth' : 'local-guest',
-  firestore: db ? 'persistent-local-cache' : 'localStorage',
+  firestore: firestoreMode,
 } as const;

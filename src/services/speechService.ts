@@ -39,7 +39,7 @@ interface SpeechRecognitionLike extends EventTarget {
   interimResults: boolean;
   lang: string;
   maxAlternatives: number;
-  start: () => void;
+  start: (audioTrack?: MediaStreamTrack) => void;
   stop: () => void;
   abort: () => void;
   onresult: ((event: SpeechRecognitionEventLike) => void) | null;
@@ -76,10 +76,14 @@ export class LiveMicRecorder {
   private shouldListen = false;
   private callbacks: TranscriptCallbacks;
   private restartTimer: number | null = null;
+  private recognitionEnded = false;
+  private onlineListener: (() => void) | null = null;
+  private inputTrack: MediaStreamTrack | null;
   speakerResolver: (() => Speaker) | null = null;
 
-  constructor(callbacks: TranscriptCallbacks) {
+  constructor(callbacks: TranscriptCallbacks, inputTrack: MediaStreamTrack | null = null) {
     this.callbacks = callbacks;
+    this.inputTrack = inputTrack;
   }
 
   get supported(): boolean {
@@ -103,6 +107,7 @@ export class LiveMicRecorder {
     recognition.maxAlternatives = 1;
 
     recognition.onstart = () => {
+      this.recognitionEnded = false;
       this.callbacks.onListeningChange?.(true);
     };
 
@@ -133,38 +138,46 @@ export class LiveMicRecorder {
       this.callbacks.onError?.(messages[event.error] ?? `Speech error: ${event.error}`);
       if (event.error === 'not-allowed' || event.error === 'service-not-allowed') {
         this.shouldListen = false;
+        if (this.onlineListener) window.removeEventListener('online', this.onlineListener);
+        this.onlineListener = null;
         this.callbacks.onListeningChange?.(false);
       }
     };
 
     recognition.onend = () => {
+      this.recognitionEnded = true;
       this.callbacks.onListeningChange?.(false);
-      if (this.shouldListen && navigator.onLine) {
-        this.restartTimer = window.setTimeout(() => {
-          try {
-            recognition.start();
-          } catch {
-            /* start() throws if the engine is already starting — safe to ignore */
-          }
-        }, 240);
-      }
+      this.scheduleRestart(recognition);
     };
 
     this.recognition = recognition;
     this.shouldListen = true;
+    this.onlineListener = () => this.scheduleRestart(recognition);
+    window.addEventListener('online', this.onlineListener);
 
     try {
-      recognition.start();
+      // Chromium accepts a MediaStreamTrack here. Without one, SpeechRecognition
+      // silently falls back to the device microphone, which misses shared-tab audio.
+      if (this.inputTrack) recognition.start(this.inputTrack);
+      else recognition.start();
       return true;
     } catch (error) {
       console.error('[PulseBrief] Could not start speech recognition', error);
       this.shouldListen = false;
+      if (this.onlineListener) window.removeEventListener('online', this.onlineListener);
+      this.onlineListener = null;
+      this.recognition = null;
+      if (this.inputTrack) {
+        this.callbacks.onError?.('This browser could not start speech recognition from shared tab audio. Update Chrome or Edge and try again.');
+      }
       return false;
     }
   }
 
   stop(): void {
     this.shouldListen = false;
+    if (this.onlineListener) window.removeEventListener('online', this.onlineListener);
+    this.onlineListener = null;
     if (this.restartTimer) window.clearTimeout(this.restartTimer);
     this.restartTimer = null;
     try {
@@ -175,6 +188,21 @@ export class LiveMicRecorder {
     this.recognition = null;
     this.callbacks.onListeningChange?.(false);
   }
+
+  private scheduleRestart(recognition: SpeechRecognitionLike): void {
+    if (!this.shouldListen || !this.recognitionEnded || !navigator.onLine) return;
+    if (this.restartTimer !== null) window.clearTimeout(this.restartTimer);
+    this.restartTimer = window.setTimeout(() => {
+      this.restartTimer = null;
+      if (!this.shouldListen || !navigator.onLine) return;
+      try {
+        if (this.inputTrack) recognition.start(this.inputTrack);
+        else recognition.start();
+      } catch {
+        /* start() throws if the engine is already starting — safe to ignore */
+      }
+    }, 240);
+  }
 }
 
 /** Captures shared tab audio and optional mic levels without recording audio. */
@@ -182,29 +210,49 @@ export class TabAudioCapture {
   private display: MediaStream | null = null;
   private mic: MediaStream | null = null;
   private context: AudioContext | null = null;
+  private tabRecognitionTrack: MediaStreamTrack | null = null;
+  private micRecognitionTrack: MediaStreamTrack | null = null;
   private timer = 0;
   micLevel = 0;
   tabLevel = 0;
   micDenied = false;
-  private energyWindow: Array<{ at: number; mic: number; tab: number }> = [];
-  private lastActiveSpeaker: Speaker = 'You (Interviewer)';
-  private lastActiveAt = 0;
+  private stopping = false;
   onLevels?: (mic: number, tab: number) => void;
   onEnded?: () => void;
 
   async start(): Promise<void> {
+    this.stopping = false;
     this.display = await navigator.mediaDevices.getDisplayMedia({ video: true, audio: true });
+    if (this.display.getAudioTracks().length === 0) {
+      this.stop();
+      throw new Error('The selected tab did not share audio. Select the meeting tab and enable “Share tab audio”.');
+    }
     const videoTracks = this.display.getVideoTracks();
     videoTracks.forEach((track) => { track.onended = null; track.stop(); });
-    this.display.getAudioTracks().forEach((track) => { track.onended = () => this.onEnded?.(); });
-    try { this.mic = await navigator.mediaDevices.getUserMedia({ audio: true }); } catch { this.micDenied = true; /* tab-only capture is valid */ }
+    this.display.getAudioTracks().forEach((track) => { track.onended = () => { if (!this.stopping) this.onEnded?.(); }; });
+    try {
+      this.mic = await navigator.mediaDevices.getUserMedia({
+        audio: { echoCancellation: true, noiseSuppression: true, autoGainControl: true },
+      });
+    } catch { this.micDenied = true; /* tab-only capture is valid */ }
     this.context = new AudioContext();
+    await this.context.resume();
+    const tabRecognitionDestination = this.context.createMediaStreamDestination();
+    this.tabRecognitionTrack = tabRecognitionDestination.stream.getAudioTracks()[0] ?? null;
     const tabAnalyser = this.context.createAnalyser();
     tabAnalyser.fftSize = 512;
-    this.context.createMediaStreamSource(this.display).connect(tabAnalyser);
+    const tabSource = this.context.createMediaStreamSource(this.display);
+    tabSource.connect(tabAnalyser);
+    tabSource.connect(tabRecognitionDestination);
     const micAnalyser = this.context.createAnalyser();
     micAnalyser.fftSize = 512;
-    if (this.mic) this.context.createMediaStreamSource(this.mic).connect(micAnalyser);
+    if (this.mic) {
+      const micRecognitionDestination = this.context.createMediaStreamDestination();
+      this.micRecognitionTrack = micRecognitionDestination.stream.getAudioTracks()[0] ?? null;
+      const micSource = this.context.createMediaStreamSource(this.mic);
+      micSource.connect(micAnalyser);
+      micSource.connect(micRecognitionDestination);
+    }
     const rms = (analyser: AnalyserNode, stream: MediaStream | null) => {
       if (!stream) return 0;
       const data = new Uint8Array(analyser.fftSize);
@@ -215,40 +263,32 @@ export class TabAudioCapture {
     this.timer = window.setInterval(() => {
       const rawMic = rms(micAnalyser, this.mic);
       this.tabLevel = rms(tabAnalyser, this.display);
-      this.micLevel = Math.max(0, rawMic - (this.tabLevel > 0.015 ? 0.55 * this.tabLevel : 0));
-      const at = Date.now();
-      this.energyWindow.push({ at, mic: this.micLevel, tab: this.tabLevel });
-      this.energyWindow = this.energyWindow.filter((sample) => at - sample.at <= 1500);
+      this.micLevel = rawMic;
       this.onLevels?.(this.micLevel, this.tabLevel);
     }, 50);
   }
 
-  resolveSpeaker(): Speaker {
-    const now = Date.now();
-    this.energyWindow = this.energyWindow.filter((sample) => now - sample.at <= 1500);
-    const micSamples = this.energyWindow.map((sample) => sample.mic).filter((level) => level > 0.015);
-    const tabSamples = this.energyWindow.map((sample) => sample.tab).filter((level) => level > 0.015);
-    const micEnergy = micSamples.length ? micSamples.reduce((sum, level) => sum + level, 0) / micSamples.length : 0;
-    const tabEnergy = tabSamples.length ? tabSamples.reduce((sum, level) => sum + level, 0) / tabSamples.length : 0;
-    if (Math.max(micEnergy, tabEnergy) > 0.015) {
-      this.lastActiveSpeaker = tabEnergy > micEnergy ? 'Guest (Prospect)' : 'You (Interviewer)';
-      this.lastActiveAt = now;
-      return this.lastActiveSpeaker;
-    }
-    return now - this.lastActiveAt <= 800 ? this.lastActiveSpeaker : 'You (Interviewer)';
+  get tabSpeechTrack(): MediaStreamTrack | null {
+    return this.tabRecognitionTrack?.readyState === 'live' ? this.tabRecognitionTrack : null;
+  }
+
+  get microphoneSpeechTrack(): MediaStreamTrack | null {
+    return this.micRecognitionTrack?.readyState === 'live' ? this.micRecognitionTrack : null;
   }
 
   stop(): void {
+    this.stopping = true;
     window.clearInterval(this.timer);
     this.display?.getTracks().forEach((track) => track.stop());
     this.mic?.getTracks().forEach((track) => track.stop());
     this.display = null;
     this.mic = null;
+    this.tabRecognitionTrack = null;
+    this.micRecognitionTrack = null;
     void this.context?.close();
     this.context = null;
     this.micLevel = 0;
     this.tabLevel = 0;
-    this.energyWindow = [];
     this.onLevels?.(0, 0);
   }
 }
@@ -333,8 +373,6 @@ export class SimulatedCallStreamer {
           await sleep(tick, signal);
         }
 
-        onInterim(line.speaker, '');
-        await sleep(Math.max(120, 420 / this.options.speed), signal);
         onFinal(line.speaker, line.text);
         await sleep(Math.max(160, 620 / this.options.speed), signal);
       }

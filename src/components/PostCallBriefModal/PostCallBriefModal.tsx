@@ -65,8 +65,10 @@ export default function PostCallBriefModal({
   const step1Done = phase !== 'redacting';
   const step2Done = phase === 'ready';
 
+  const rawTranscriptAvailable = Boolean(brief?.rawTranscript.trim());
+  const showRawTranscript = showRaw && rawTranscriptAvailable;
   const transcript = brief
-    ? showRaw
+    ? showRawTranscript
       ? brief.rawTranscript
       : brief.sanitizedTranscript
     : '';
@@ -278,9 +280,10 @@ export default function PostCallBriefModal({
                       type="button"
                       className={`${styles.diffOption} ${showRaw ? styles.diffActive : ''}`}
                       onClick={() => setShowRaw(true)}
+                      disabled={!rawTranscriptAvailable}
                       aria-pressed={showRaw}
                     >
-                      Raw
+                      {rawTranscriptAvailable ? 'Raw' : 'Raw unavailable'}
                     </button>
                   </div>
                 </div>
@@ -296,7 +299,7 @@ export default function PostCallBriefModal({
                   )}
                 </div>
                 <p className={styles.transcriptNote}>
-                  {showRaw
+                  {showRawTranscript
                     ? 'Raw transcript — kept in memory for this review only, never sent to the cloud.'
                     : `Sanitized transcript — ${redactionCount} entities replaced with placeholders. This exact text is what Cloud Gemini received.`}
                 </p>

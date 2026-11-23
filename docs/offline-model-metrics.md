@@ -10,6 +10,8 @@
 
 PulseBrief uses Gemini Nano running entirely in the browser for three real-time operations, with Gemini cloud models handling post-call synthesis only. The metrics below reflect measurements from a mid-range developer machine (Intel Core i7-12th Gen, 16 GB RAM, Chrome 130+ Canary) during simulated and live call sessions.
 
+> **Measurement status:** Targets marked in the tables are product acceptance targets. “Observed” values are expected benchmark ranges for the stated reference device, not production telemetry collected from every supported browser and hardware profile.
+
 ---
 
 ## 1 — Op 1: Live Goal Tracking (`evaluateLiveGoals`)
@@ -140,7 +142,8 @@ Benchmarks were run against the **demo scenario** (`src/data/demoScenario.ts`) a
 | Model cold-start | First inference after page load may be 2–4× slower as Chrome JIT-compiles the WASM runtime. |
 | Long transcript degradation | Beyond ~8 000 characters in the 6 000-char window (edge case), goal-check accuracy may drop 5–8 %. |
 | Concurrent calls | Running two PulseBrief tabs simultaneously will contend for Nano inference time; latency may double. |
-| Turn word cap (UI) | Turns exceeding 60 words are capped in the UI with an expand toggle. The full text is still passed to the inference pipeline. |
+| Turn preview cap (UI) | Final turns are previewed at 60 words and 420 characters, with an expand toggle. Interim turns use the same preview cap. The full text is still passed to the inference pipeline. |
+| Turn transition stability | Finalized turns replace interim text without an intentional clear/blank interval, preventing the transcript block from disappearing during finalization. |
 
 ---
 

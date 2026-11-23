@@ -5,12 +5,20 @@ import styles from './LiveTranscript.module.css';
 
 /** Maximum words shown per turn before the text is clipped. */
 const TURN_WORD_CAP = 60;
+/** Maximum characters shown per turn as an additional guard for long words. */
+const TURN_CHAR_CAP = 420;
 
 /** Returns truncated text and whether truncation was applied. */
 function truncateTurn(text: string): { preview: string; truncated: boolean } {
-  const words = text.split(/\s+/);
-  if (words.length <= TURN_WORD_CAP) return { preview: text, truncated: false };
-  return { preview: words.slice(0, TURN_WORD_CAP).join(' '), truncated: true };
+  const trimmed = text.trim();
+  const words = trimmed.split(/\s+/).filter(Boolean);
+  const wordPreview = words.slice(0, TURN_WORD_CAP).join(' ');
+  const characterPreview = wordPreview.slice(0, TURN_CHAR_CAP);
+  const preview = characterPreview.length < wordPreview.length
+    ? characterPreview
+    : wordPreview;
+  const truncated = words.length > TURN_WORD_CAP || trimmed.length > preview.length;
+  return { preview: truncated ? preview : trimmed, truncated };
 }
 
 interface LiveTranscriptProps {
@@ -98,12 +106,6 @@ export default function LiveTranscript({
   const scrollRef = useRef<HTMLDivElement>(null);
   const scrollFrameRef = useRef<number | null>(null);
   const [pinned, setPinned] = useState(true);
-  /**
-   * Set of segment IDs that have already been mounted and animated.
-   * Only IDs absent from this set get the riseIn animation class,
-   * preventing re-renders from retriggering the enter animation.
-   */
-  const animatedIdsRef = useRef<Set<string>>(new Set());
   /** Set of segment IDs whose text the user has expanded past the word cap. */
   const [expandedIds, setExpandedIds] = useState<Set<string>>(new Set());
 
@@ -129,11 +131,9 @@ export default function LiveTranscript({
     if (scrollFrameRef.current !== null) cancelAnimationFrame(scrollFrameRef.current);
   }, []);
 
-  // When a session resets, segments become []. Clear tracking state so the
-  // next session's turns get the enter animation again.
+  // When a session resets, clear expanded turn previews for the next call.
   useEffect(() => {
     if (segments.length === 0) {
-      animatedIdsRef.current.clear();
       setExpandedIds(new Set());
     }
   }, [segments.length]);
@@ -147,6 +147,7 @@ export default function LiveTranscript({
 
   const wordCount = segments.reduce((total, segment) => total + segment.text.split(/\s+/).length, 0);
   const active = listening || simulating;
+  const interimPreview = interim ? truncateTurn(interim.text).preview : '';
 
   return (
     <section className={styles.transcript} aria-label="Live transcript">
@@ -344,15 +345,12 @@ export default function LiveTranscript({
             {segments.map((segment) => {
               const isYou = segment.speaker === 'You (Interviewer)';
               const highlighted = (segment.matchedGoalIds?.length ?? 0) > 0;
-              // Only play the enter animation for segments that haven't been seen yet.
-              const isNew = !animatedIdsRef.current.has(segment.id);
-              if (isNew) animatedIdsRef.current.add(segment.id);
               const expanded = expandedIds.has(segment.id);
               const { preview, truncated } = truncateTurn(segment.text);
               return (
                 <article
                   key={segment.id}
-                  className={`${styles.segment} ${isYou ? styles.you : styles.guest} ${highlighted ? styles.highlighted : ''} ${isNew ? styles.segmentEnter : ''}`}
+                  className={`${styles.segment} ${isYou ? styles.you : styles.guest} ${highlighted ? styles.highlighted : ''}`}
                 >
                   <div className={styles.segmentHead}>
                     <button type="button" className={styles.speakerChip} onClick={() => onFlipSpeaker(segment.id)} title="Click to flip this transcript speaker">
@@ -405,7 +403,7 @@ export default function LiveTranscript({
                   <span className={styles.time}>live</span>
                 </div>
                 <p className={styles.segmentText}>
-                  {interim.text}
+                  {interimPreview}
                   <span className={styles.caret} aria-hidden="true" />
                 </p>
               </article>
