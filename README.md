@@ -67,11 +67,20 @@ If Nano is missing, still downloading, or the machine is offline, the app degrad
 └───────────────────────────────────────────────────────────────────────────────────────────┘
 ```
 
+### How spoken audio reaches the screen
+
+1. **Capture:** `TabAudioCapture` in `src/services/speechService.ts` asks you to share a browser tab and optionally opens the microphone. Web Audio creates separate temporary tracks for each input in memory. The audio meters show whether the tab and mic are producing sound.
+2. **Recognize:** PulseBrief starts one `LiveMicRecorder` per track. Tab results are labeled **Guest** and mic results **You**, so speaker identity comes from the audio source instead of a volume guess. Interim results appear as partial lines; final results become transcript segments. The regular **Start live mic** button uses the device microphone directly.
+3. **Update the co-pilot:** `src/App.tsx` stores each final segment in React state, which renders in `LiveTranscript`. The same final segment schedules goal analysis and a possible follow-up question through `hybridAI.ts`.
+4. **End the call:** the transcript is redacted locally, then the sanitized text can be sent for the post-call brief. Audio itself is not saved or sent by PulseBrief.
+
+If the tab meter moves but no words appear, check that you selected **Share tab audio** and that your browser supports speech recognition from an audio track. PulseBrief reports when the browser cannot start recognition on the shared audio.
+
 ### The four-stage routing engine
 
 1. **Live goal scoring** — every final transcript segment triggers a Nano pass that returns `{id, status, evidenceSnippet}` for goals that were just evidenced. Statuses only move forward.
 2. **Follow-up nudges** — hedged language ("budgets are weird right now", "we kind of use spreadsheets") produces one specific question. The engine stays quiet on concrete answers and every other turn, because a co-pilot that interrupts constantly is worse than none.
-3. **Privacy gate** — Nano masks PII, then a **deterministic regex pass always runs on top**. A conservative model can never be the reason an email reaches the cloud. The sanitized text must also stay ≥60% of the original length, or the model rewrite is discarded.
+3. **Privacy gate** — a **deterministic regex pass masks known PII first**, then Nano can catch additional entities. Another regex pass checks the result. The model only sees text that already had known PII removed, and its rewrite must stay ≥60% of its input length.
 4. **Cloud synthesis** — the sanitized transcript goes to `gemini-3.8-flash` with `InferenceMode.ONLY_IN_CLOUD`. Result: five bullet summary, structured CRM fields, personalized follow-up email.
 
 Routing mode is user-selectable, which is how judges can watch the split live:
@@ -85,6 +94,10 @@ Routing mode is user-selectable, which is how judges can watch the split live:
 ---
 
 ## Quick start
+
+### Loading as a Chrome Side Panel Extension
+
+Run `npm run build`, open `chrome://extensions`, enable **Developer mode**, choose **Load unpacked**, and select the generated `dist/` folder. Click the PulseBrief extension icon to open the side panel beside a meeting tab. If Chrome blocks microphone access in the side panel, choose **Enable Extension Mic** once to open a full tab and grant permission, then return to the panel.
 
 ```bash
 git clone <your-repo-url> pulsebrief
@@ -125,7 +138,7 @@ VITE_APPCHECK_DEBUG_TOKEN=...
 4. **App Check** → register the web app with **reCAPTCHA Enterprise**, put the site key in `VITE_RECAPTCHA_SITE_KEY`.
 5. For local development, create a **debug token** in App Check → Apps → ⋮ → *Manage debug tokens*, and put it in `VITE_APPCHECK_DEBUG_TOKEN`. It is injected onto `self.FIREBASE_APPCHECK_DEBUG_TOKEN` *before* `initializeAppCheck` runs.
 6. **Authentication** → enable **Anonymous** (guests) and **Google** (optional sign in that keeps a guest's briefs).
-7. **Firestore** → create a database. Suggested rules (owner-scoped, append-only):
+7. **Firestore** → create a database. Suggested rules (owner-scoped; users can delete their own saved calls):
 
 ```js
 rules_version = '2';
@@ -136,7 +149,9 @@ service cloud.firestore {
                     && request.resource.data.ownerUid == request.auth.uid;
       allow read:   if request.auth != null
                     && resource.data.ownerUid == request.auth.uid;
-      allow update, delete: if false;
+      allow update: if false;
+      allow delete: if request.auth != null
+                    && resource.data.ownerUid == request.auth.uid;
     }
   }
 }
@@ -217,7 +232,7 @@ Other integration points:
 | App init, App Check + debug token, anonymous auth, IndexedDB-persisted Firestore | `src/config/firebase.ts` |
 | Capability detection (`LanguageModel.availability()` / `capabilities()`) | `src/services/hybridAI.ts` → `checkOnDeviceNanoStatus()` |
 | Firestore CRUD + offline queue + localStorage fallback | `src/services/sessionStore.ts` |
-| Web Speech API wrapper + scripted streamer | `src/services/speechService.ts` |
+| Web Speech API, shared-tab capture + scripted streamer | `src/services/speechService.ts` |
 
 Every call is wrapped in `performance.now()` timing and mapped to telemetry, which is what the receipt renders. `mergeTelemetry` is the only writer.
 
@@ -225,10 +240,10 @@ Every call is wrapped in `performance.now()` timing and mapped to telemetry, whi
 
 ## Privacy model, precisely
 
-- **PulseBrief never records, stores or uploads audio.** Speech to text is done by the browser's own Web Speech API, and Chrome may use Google's speech service for that step. Only the resulting text is used by the app, and it is masked on this device before any cloud model sees it.
-- **PII masking is deterministic-first.** Regex masks emails, phones (9–15 digits), street addresses, SSNs and account IDs (`ACCT-88213`, `PO-12345`, …). The Nano pass runs *before* the regex net, and its output is re-scanned.
-- **The cloud never sees the raw transcript.** `synthesizePostCallBrief` accepts only the sanitized string; the raw text is kept in memory for the transcript toggle and is never included in the cloud prompt.
-- **Local persistence is opt-in by configuration.** Without Firebase, sessions stay in `localStorage`; with Firebase, they go to owner-scoped Firestore documents with offline persistence enabled.
+- **PulseBrief never records, stores or uploads audio.** Speech to text is done by the browser's own Web Speech API. For **Tab + Mic**, separate temporary audio tracks are passed directly to speech recognition; they are not played back or saved by PulseBrief. Chrome may use Google's speech service for recognition. Only the resulting text is used by the app, and it is masked before live or post-call cloud analysis.
+- **PII masking is deterministic-first.** Regex masks emails, phones (9–15 digits), street addresses, SSNs and account IDs (`ACCT-88213`, `PO-12345`, …). The redaction model receives already regex-masked text, runs on-device, and its output is scanned again.
+- **The cloud never sees the raw transcript.** Live prompts use deterministic redaction first, the final redaction model runs on-device only, and `synthesizePostCallBrief` accepts sanitized text. The raw text is available in memory during the active review and is omitted from both local history and Firestore.
+- **Brief persistence is opt-in by configuration.** Without Firebase, sanitized sessions stay in `localStorage`; with Firebase, sanitized briefs go to owner-scoped Firestore documents with offline persistence enabled.
 - **No secrets in the bundle.** Only `VITE_*` public config; nothing is hardcoded.
 
 Known limits, stated honestly:
@@ -262,7 +277,7 @@ pulsebrief/
     ├── config/firebase.ts
     ├── services/
     │   ├── hybridAI.ts              # 4 hybrid operations + demo engine
-    │   ├── speechService.ts         # live mic + simulated call streamer
+    │   ├── speechService.ts         # mic/tab speech + simulated call streamer
     │   └── sessionStore.ts
     ├── data/demoScenario.ts         # logistics discovery + technical screen
     └── components/
@@ -286,6 +301,42 @@ npm run build      # typecheck + production bundle
 npm run preview    # serve the production build on 0.0.0.0:4173
 npm run typecheck  # tsc --noEmit
 ```
+
+## Deploy
+
+The site is hosted on Firebase Hosting (project `pulsebrief-cf45e`).
+
+**How CI/CD works**
+
+- **Pull requests to `master`** run `.github/workflows/ci.yml`: `npm ci`, `npm run typecheck`, `npm run build`. Nothing is deployed.
+- **Pushes to `master`** (and the manual *Run workflow* button) run `.github/workflows/deploy.yml`. It checks that every required secret is set, builds with them, and deploys to the live channel. Only one deploy runs at a time.
+- There are no preview channels for pull requests. Preview URLs use other domains that the sign in and App Check settings do not allow.
+- The build always sets `VITE_APPCHECK_DEBUG_TOKEN` to an empty string, so a debug token can never end up in the public site.
+
+**GitHub Actions secrets** (Settings → Secrets and variables → Actions → *Secrets*)
+
+The seven build settings are stored as secrets, not variables:
+
+- `VITE_FIREBASE_API_KEY`
+- `VITE_FIREBASE_AUTH_DOMAIN`
+- `VITE_FIREBASE_PROJECT_ID`
+- `VITE_FIREBASE_STORAGE_BUCKET`
+- `VITE_FIREBASE_MESSAGING_SENDER_ID`
+- `VITE_FIREBASE_APP_ID`
+- `VITE_RECAPTCHA_SITE_KEY`
+
+Alongside them, the deploy step needs:
+
+- `FIREBASE_SERVICE_ACCOUNT`: the service account JSON for the Firebase project.
+
+**Deploying by hand**
+
+```bash
+VITE_APPCHECK_DEBUG_TOKEN= npm run build   # blank debug token, so it is not bundled
+firebase deploy --only hosting
+```
+
+Make sure the other `VITE_*` values are present in your environment or `.env` for the build.
 
 ## License
 

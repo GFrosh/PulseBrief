@@ -433,13 +433,29 @@
 
 @media (max-width: 600px) {
   .backdrop {
-    padding: 10px;
+    padding: max(8px, env(safe-area-inset-top)) 10px max(8px, env(safe-area-inset-bottom));
+  }
+
+  .panel {
+    max-height: calc(100dvh - 16px);
+    border-radius: var(--radius-lg);
   }
 
   .header,
   .tabs,
   .body {
     padding-inline: 14px;
+  }
+
+  .close,
+  .tab,
+  .openBtn,
+  .deleteBtn,
+  .primaryBtn,
+  .secondaryBtn,
+  .dangerBtn,
+  .googleBtn {
+    min-height: 40px;
   }
 
   .sessionCard {
@@ -449,5 +465,10 @@
 
   .sessionActions {
     justify-content: flex-end;
+  }
+
+  .formFooter {
+    flex-direction: column;
+    align-items: stretch;
   }
 }

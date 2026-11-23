@@ -25,6 +25,28 @@
   min-width: 0;
 }
 
+.audioMeters {
+  display: grid;
+  grid-template-columns: auto minmax(48px, 100px) auto minmax(48px, 100px);
+  align-items: center;
+  gap: 5px 8px;
+  margin-top: 8px;
+  color: var(--text-tertiary);
+  font-size: 9.5px;
+}
+.audioMeters i {
+  height: 4px;
+  overflow: hidden;
+  border-radius: 9px;
+  background: var(--surface-3);
+}
+.audioMeters b {
+  display: block;
+  height: 100%;
+  border-radius: inherit;
+  transition: width 90ms linear;
+}
+
 .titleRow {
   display: flex;
   align-items: center;
@@ -352,7 +374,6 @@
   border-radius: var(--radius-md);
   border: 1px solid transparent;
   background: transparent;
-  animation: riseIn 260ms var(--ease-out);
   transition: background var(--dur-base), border-color var(--dur-base);
 }
 
@@ -392,7 +413,12 @@
   font-weight: 600;
   letter-spacing: 0.015em;
   color: var(--text-secondary);
+  padding: 0;
+  border: 0;
+  background: transparent;
+  cursor: pointer;
 }
+.speakerChip:hover { color: var(--text); }
 
 .avatar {
   display: grid;
@@ -453,6 +479,22 @@
   min-width: 0;
   overflow-wrap: anywhere;
   word-break: break-word;
+}
+
+.expandToggle {
+  display: inline;
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--color-local);
+  opacity: 0.82;
+  margin-left: 2px;
+  vertical-align: baseline;
+  transition: opacity var(--dur-fast);
+}
+
+.expandToggle:hover {
+  opacity: 1;
+  text-decoration: underline;
 }
 
 .interim .segmentText {
@@ -658,7 +700,7 @@
   }
 }
 
-@media (max-width: 720px) {
+@media (max-width: 767px) {
   .header,
   .controls {
     padding-inline: 14px;
@@ -675,7 +717,8 @@
   .guest {
     margin-left: 0;
   }
-  .footerItem:nth-child(3) {
+  .footerItem:nth-child(3),
+  .footerDivider {
     display: none;
   }
 
@@ -683,23 +726,34 @@
     gap: 8px;
   }
 
+  .audioMeters {
+    grid-template-columns: auto 1fr;
+    gap: 4px 8px;
+  }
+
   .controls {
     align-items: stretch;
   }
 
   .controlGroup {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
     width: 100%;
+    gap: 8px;
   }
 
   .micButton,
   .simButton,
   .endButton,
   .speedOption {
-    min-height: 44px;
+    min-height: 42px;
+    justify-content: center;
   }
 
   .speedToggle {
-    min-height: 44px;
+    min-height: 42px;
+    display: grid;
+    grid-template-columns: 1fr 1fr;
   }
 
   .speedOption {
@@ -744,15 +798,8 @@
     white-space: normal;
   }
 
-  .controlGroup,
-  .controls {
-    gap: 8px;
-  }
-
-  .micButton,
-  .simButton {
-    flex: 1;
-    justify-content: center;
+  .controlGroup {
+    grid-template-columns: minmax(0, 1fr);
   }
 
   .segmentHead {

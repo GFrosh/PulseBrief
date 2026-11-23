@@ -41,9 +41,11 @@ export default function RuntimeStatusBanner({
       key: 'offline',
       tone: 'offline',
       badge: 'Offline',
-      title: 'You are offline — running on-device mode',
+      title: routingMode === 'FORCE_CLOUD' ? 'Cloud mode is offline' : 'Offline mode',
       description:
-        nanoStatus === 'AVAILABLE' || simulated
+        routingMode === 'FORCE_CLOUD'
+          ? 'Cloud requests fall back to local analysis. Speech recognition may pause until your connection returns, and saves queue when persistent storage is available.'
+          : nanoStatus === 'AVAILABLE' || simulated
           ? 'Live goal tracking and nudges continue locally. Post-call briefs and Firestore sync will queue in IndexedDB until your connection returns.'
           : 'Network is unavailable and on-device Gemini Nano is not ready on this machine. Reconnect to resume cloud synthesis or live captions.',
       showRetry: true,

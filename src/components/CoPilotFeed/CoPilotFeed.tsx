@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState } from 'react';
-import type { ActivityEntry, CoPilotNudge, NudgeTrigger } from '../../types/session';
+import { createPortal } from 'react-dom';
+import type { ActivityEntry, CoPilotNudge, NudgeTrigger, SessionGoal } from '../../types/session';
 import styles from './CoPilotFeed.module.css';
 
 interface CoPilotFeedProps {
@@ -9,6 +10,8 @@ interface CoPilotFeedProps {
   onMarkAsked: (nudgeId: string) => void;
   active: boolean;
   localActive: boolean;
+  goals: SessionGoal[];
+  onDock: () => void;
 }
 
 const TRIGGER_COPY: Record<NudgeTrigger, { label: string; tone: string }> = {
@@ -168,7 +171,19 @@ function NudgeCard({
   );
 }
 
-export default function CoPilotFeed({ nudges, activity, onDismiss, onMarkAsked, active, localActive }: CoPilotFeedProps) {
+export default function CoPilotFeed({ nudges, activity, onDismiss, onMarkAsked, active, localActive, goals, onDock }: CoPilotFeedProps) {
+  const [pipWindow, setPipWindow] = useState<Window | null>(null);
+  const pipApi = (window as Window & { documentPictureInPicture?: { requestWindow(options: { width: number; height: number }): Promise<Window> } }).documentPictureInPicture;
+  const popOut = async () => {
+    if (!pipApi) return;
+    const next = await pipApi.requestWindow({ width: 390, height: 540 });
+    document.head.querySelectorAll('style, link[rel="stylesheet"]').forEach((node) => next.document.head.appendChild(node.cloneNode(true)));
+    next.document.documentElement.dataset.theme = document.documentElement.dataset.theme;
+    const observer = new MutationObserver(() => { next.document.documentElement.dataset.theme = document.documentElement.dataset.theme; });
+    observer.observe(document.documentElement, { attributes: true, attributeFilter: ['data-theme'] });
+    next.addEventListener('pagehide', () => { observer.disconnect(); setPipWindow(null); onDock(); }, { once: true });
+    setPipWindow(next);
+  };
   const logRef = useRef<HTMLDivElement>(null);
   const visible = nudges.filter((nudge) => !nudge.dismissed);
 
@@ -181,11 +196,21 @@ export default function CoPilotFeed({ nudges, activity, onDismiss, onMarkAsked, 
     <aside className={styles.feed} aria-label="AI co-pilot feed">
       <header className={styles.header}>
         <div className={styles.headerRow}>
-          <h2 className={styles.title}>Co-pilot</h2>
-          <span className={`${styles.engineTag} ${localActive ? styles.engineLocal : styles.engineCloud}`}>
-            <span className={styles.engineDot} aria-hidden="true" />
-            {localActive ? 'on-device' : 'cloud'}
-          </span>
+          <div className={styles.headerTitleGroup}>
+            <h2 className={styles.title}>Co-pilot</h2>
+            <span className={`${styles.engineTag} ${localActive ? styles.engineLocal : styles.engineCloud}`}>
+              <span className={styles.engineDot} aria-hidden="true" />
+              {localActive ? 'on-device' : 'cloud'}
+            </span>
+          </div>
+          {pipApi && (
+            <button type="button" className={styles.popOutBtn} onClick={() => void popOut()} title="Pop out co-pilot nudges into a floating mini window">
+              <svg viewBox="0 0 12 12" width="10" height="10" aria-hidden="true">
+                <path d="M5 2H2.5A1.5 1.5 0 0 0 1 3.5v6A1.5 1.5 0 0 0 2.5 11h6A1.5 1.5 0 0 0 10 9.5V7M7.5 1H11v3.5M11 1 5.5 6.5" fill="none" stroke="currentColor" strokeWidth="1.2" strokeLinecap="round" strokeLinejoin="round" />
+              </svg>
+              <span>Pop out</span>
+            </button>
+          )}
         </div>
         <p className={styles.subtitle}>Follow-ups surfaced before you need them</p>
       </header>
@@ -245,6 +270,106 @@ export default function CoPilotFeed({ nudges, activity, onDismiss, onMarkAsked, 
           )}
         </div>
       </section>
+      {pipWindow &&
+        createPortal(
+          <main className={styles.pipRoot}>
+            <header className={styles.pipHeader}>
+              <div className={styles.pipTitleRow}>
+                <strong>PulseBrief Co-pilot</strong>
+                <span className={`${styles.engineTag} ${localActive ? styles.engineLocal : styles.engineCloud}`}>
+                  <span className={styles.engineDot} aria-hidden="true" />
+                  {localActive ? 'Nano Active' : navigator.onLine ? 'Cloud' : 'Offline'}
+                </span>
+              </div>
+              <button
+                type="button"
+                className={styles.action}
+                onClick={() => {
+                  pipWindow.close();
+                  setPipWindow(null);
+                  onDock();
+                }}
+              >
+                Dock Back
+              </button>
+            </header>
+
+            <section className={styles.pipGoals}>
+              <div className={styles.pipGoalsHead}>
+                <strong>
+                  {goals.filter((g) => g.status === 'covered').length}/{goals.length} Goals Covered
+                </strong>
+              </div>
+              <div className={styles.pipProgressBar}>
+                {goals.map((g) => (
+                  <i
+                    key={g.id}
+                    className={
+                      g.status === 'covered'
+                        ? styles.pipSegCovered
+                        : g.status === 'partial'
+                          ? styles.pipSegPartial
+                          : styles.pipSegPending
+                    }
+                  />
+                ))}
+              </div>
+              <div className={styles.pipGoalChips}>
+                {goals.map((g) => (
+                  <span
+                    key={g.id}
+                    className={`${styles.pipGoalChip} ${g.status === 'covered' ? styles.pipGoalChipCovered : ''}`}
+                  >
+                    {g.status === 'covered' ? '✓' : g.status === 'partial' ? '◐' : '○'} {g.text}
+                  </span>
+                ))}
+              </div>
+            </section>
+
+            <section className={styles.pipNudges}>
+              <h3 className={styles.pipSubheading}>Follow-up nudges</h3>
+              {visible.length === 0 ? (
+                <p className={styles.pipEmpty}>Listening for follow-up opportunities…</p>
+              ) : (
+                visible.map((n) => (
+                  <article key={n.id} className={`${styles.card} ${n.asked ? styles.cardAsked : ''}`}>
+                    <p className={styles.question}>{n.suggestedQuestion}</p>
+                    <div className={styles.actions}>
+                      <button
+                        type="button"
+                        className={styles.action}
+                        onClick={() =>
+                          void pipWindow.navigator.clipboard
+                            ?.writeText(n.suggestedQuestion)
+                            .catch(() => navigator.clipboard.writeText(n.suggestedQuestion))
+                        }
+                      >
+                        Copy
+                      </button>
+                      <button
+                        type="button"
+                        className={`${styles.action} ${styles.actionPrimary}`}
+                        onClick={() => onMarkAsked(n.id)}
+                        disabled={n.asked}
+                      >
+                        {n.asked ? 'Asked' : 'Mark Asked'}
+                      </button>
+                      <button
+                        type="button"
+                        className={styles.dismiss}
+                        onClick={() => onDismiss(n.id)}
+                        aria-label="Dismiss nudge"
+                      >
+                        ✕
+                      </button>
+                    </div>
+                  </article>
+                ))
+              )}
+            </section>
+          </main>,
+          pipWindow.document.body,
+        )}
     </aside>
   );
 }
