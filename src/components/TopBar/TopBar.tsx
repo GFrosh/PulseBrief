@@ -39,15 +39,17 @@ function resolvePill(
   if (!online) {
     return {
       tone: 'offline',
-      label: realNanoReady ? 'Offline — Local Nano Active' : 'Offline Mode',
-      detail: 'Network lost. Inference stays on this device; sessions queue in IndexedDB.',
+      label: routingMode === 'FORCE_CLOUD' ? 'Cloud unavailable offline' : realNanoReady ? 'Local Nano active offline' : 'Offline Mode',
+      detail: routingMode === 'FORCE_CLOUD'
+        ? 'Cloud-routed analysis cannot reach Gemini; the app falls back locally and queues Firestore writes until reconnect.'
+        : 'Network lost. Live inference falls back on this device when available; Firestore writes queue until reconnect.',
     };
   }
   if (routingMode === 'FORCE_CLOUD') {
     return {
       tone: 'cloud',
       label: simulated ? 'Simulated Cloud Mode' : 'Cloud Forced: Gemini 3.8 flash',
-      detail: 'Every call is routed to Cloud Gemini via Firebase AI Logic.',
+      detail: 'Live analysis and final synthesis route to Cloud Gemini. The PII privacy gate always stays on-device.',
     };
   }
   if (routingMode === 'FORCE_LOCAL') {

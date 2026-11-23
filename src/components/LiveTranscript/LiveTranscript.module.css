@@ -374,7 +374,6 @@
   border-radius: var(--radius-md);
   border: 1px solid transparent;
   background: transparent;
-  animation: riseIn 260ms var(--ease-out);
   transition: background var(--dur-base), border-color var(--dur-base);
 }
 
@@ -480,6 +479,22 @@
   min-width: 0;
   overflow-wrap: anywhere;
   word-break: break-word;
+}
+
+.expandToggle {
+  display: inline;
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--color-local);
+  opacity: 0.82;
+  margin-left: 2px;
+  vertical-align: baseline;
+  transition: opacity var(--dur-fast);
+}
+
+.expandToggle:hover {
+  opacity: 1;
+  text-decoration: underline;
 }
 
 .interim .segmentText {

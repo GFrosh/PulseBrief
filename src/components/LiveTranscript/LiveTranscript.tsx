@@ -1,7 +1,25 @@
-import { useEffect, useRef, useState } from 'react';
+import { useEffect, useRef, useState, useCallback } from 'react';
 import type { Speaker, TranscriptSegment } from '../../types/session';
 import { scenarioDurationSeconds } from '../../services/speechService';
 import styles from './LiveTranscript.module.css';
+
+/** Maximum words shown per turn before the text is clipped. */
+const TURN_WORD_CAP = 60;
+/** Maximum characters shown per turn as an additional guard for long words. */
+const TURN_CHAR_CAP = 420;
+
+/** Returns truncated text and whether truncation was applied. */
+function truncateTurn(text: string): { preview: string; truncated: boolean } {
+  const trimmed = text.trim();
+  const words = trimmed.split(/\s+/).filter(Boolean);
+  const wordPreview = words.slice(0, TURN_WORD_CAP).join(' ');
+  const characterPreview = wordPreview.slice(0, TURN_CHAR_CAP);
+  const preview = characterPreview.length < wordPreview.length
+    ? characterPreview
+    : wordPreview;
+  const truncated = words.length > TURN_WORD_CAP || trimmed.length > preview.length;
+  return { preview: truncated ? preview : trimmed, truncated };
+}
 
 interface LiveTranscriptProps {
   segments: TranscriptSegment[];
@@ -88,6 +106,16 @@ export default function LiveTranscript({
   const scrollRef = useRef<HTMLDivElement>(null);
   const scrollFrameRef = useRef<number | null>(null);
   const [pinned, setPinned] = useState(true);
+  /** Set of segment IDs whose text the user has expanded past the word cap. */
+  const [expandedIds, setExpandedIds] = useState<Set<string>>(new Set());
+
+  const toggleExpand = useCallback((id: string) => {
+    setExpandedIds((prev) => {
+      const next = new Set(prev);
+      if (next.has(id)) next.delete(id); else next.add(id);
+      return next;
+    });
+  }, []);
 
   useEffect(() => {
     if (!pinned) return;
@@ -103,6 +131,13 @@ export default function LiveTranscript({
     if (scrollFrameRef.current !== null) cancelAnimationFrame(scrollFrameRef.current);
   }, []);
 
+  // When a session resets, clear expanded turn previews for the next call.
+  useEffect(() => {
+    if (segments.length === 0) {
+      setExpandedIds(new Set());
+    }
+  }, [segments.length]);
+
   const handleScroll = () => {
     const node = scrollRef.current;
     if (!node) return;
@@ -112,6 +147,7 @@ export default function LiveTranscript({
 
   const wordCount = segments.reduce((total, segment) => total + segment.text.split(/\s+/).length, 0);
   const active = listening || simulating;
+  const interimPreview = interim ? truncateTurn(interim.text).preview : '';
 
   return (
     <section className={styles.transcript} aria-label="Live transcript">
@@ -135,7 +171,7 @@ export default function LiveTranscript({
             <span>You (Mic)</span><i><b style={{ width: `${Math.max(3, audioLevels.mic * 100)}%`, background: 'var(--color-local)' }} /></i>
             <span>Prospect (Tab)</span><i><b style={{ width: `${Math.max(3, audioLevels.tab * 100)}%`, background: 'var(--color-cloud)' }} /></i>
           </div>}
-          <button type="button" className={styles.speakerMode} onClick={onCycleSpeakerMode} aria-label="Cycle active speaker override">
+          <button type="button" className={styles.speakerMode} onClick={onCycleSpeakerMode} disabled={tabMode} title={tabMode ? 'Tab and microphone tracks have separate speaker labels' : undefined} aria-label="Cycle active speaker override">
             🎙️ Speaking: {speakerMode ?? 'Auto (You / Guest)'}
           </button>
         </div>
@@ -309,6 +345,8 @@ export default function LiveTranscript({
             {segments.map((segment) => {
               const isYou = segment.speaker === 'You (Interviewer)';
               const highlighted = (segment.matchedGoalIds?.length ?? 0) > 0;
+              const expanded = expandedIds.has(segment.id);
+              const { preview, truncated } = truncateTurn(segment.text);
               return (
                 <article
                   key={segment.id}
@@ -336,7 +374,19 @@ export default function LiveTranscript({
                       </span>
                     )}
                   </div>
-                  <p className={styles.segmentText}>{segment.text}</p>
+                  <p className={styles.segmentText}>
+                    {expanded || !truncated ? segment.text : preview}
+                    {truncated && (
+                      <button
+                        type="button"
+                        className={styles.expandToggle}
+                        onClick={() => toggleExpand(segment.id)}
+                        aria-expanded={expanded}
+                      >
+                        {expanded ? '\u00a0show less' : `\u2026\u00a0+${segment.text.split(/\s+/).length - TURN_WORD_CAP} words`}
+                      </button>
+                    )}
+                  </p>
                 </article>
               );
             })}
@@ -353,7 +403,7 @@ export default function LiveTranscript({
                   <span className={styles.time}>live</span>
                 </div>
                 <p className={styles.segmentText}>
-                  {interim.text}
+                  {interimPreview}
                   <span className={styles.caret} aria-hidden="true" />
                 </p>
               </article>

@@ -112,8 +112,8 @@ export default function AccountAndHistoryModal({
   };
 
   const handleDelete = async (sessionId: string) => {
-    await deleteSession(sessionId);
     setSessions((prev) => prev.filter((item) => item.id !== sessionId));
+    await deleteSession(sessionId);
   };
 
   return (
