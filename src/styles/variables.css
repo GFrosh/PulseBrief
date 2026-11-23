@@ -107,9 +107,10 @@
   --dur-slow: 420ms;
 
   /* --- Layout ------------------------------------------------------------ */
-  --topbar-height: 68px;
-  --sidebar-width: 296px;
-  --feed-width: 372px;
+  --topbar-height: 64px;
+  --sidebar-width: clamp(256px, 21vw, 304px);
+  --feed-width: clamp(304px, 26vw, 380px);
+  --panel-pad-x: clamp(14px, 1.5vw, 20px);
   --z-topbar: 40;
   --z-modal: 100;
   --z-toast: 120;

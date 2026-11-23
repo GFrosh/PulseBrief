@@ -1,20 +1,41 @@
 .button {
   height: 30px;
-  padding: 0 var(--space-3, 12px);
+  padding: 0 10px;
   border-radius: var(--radius-sm);
   border: 1px solid var(--border);
+  background: var(--surface-1);
   color: var(--text-secondary);
-  font-size: 12px;
+  font-size: var(--text-xs);
+  font-weight: 550;
   white-space: nowrap;
+  max-width: 155px;
+  overflow: hidden;
+  text-overflow: ellipsis;
   transition: color var(--dur-fast), background var(--dur-fast), border-color var(--dur-fast);
 }
 
 .button:hover:not(:disabled) {
   color: var(--text);
   background: var(--surface-2);
+  border-color: var(--border-strong);
 }
 
 .button:disabled {
   opacity: 0.6;
   cursor: default;
+}
+
+@media (max-width: 1024px) {
+  .button {
+    max-width: 112px;
+    padding: 0 8px;
+  }
+}
+
+@media (max-width: 640px) {
+  .button {
+    height: 38px;
+    max-width: 96px;
+    font-size: 11px;
+  }
 }

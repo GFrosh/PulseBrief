@@ -1,7 +1,25 @@
-import { useEffect, useRef, useState } from 'react';
+import { useEffect, useRef, useState, useCallback } from 'react';
 import type { Speaker, TranscriptSegment } from '../../types/session';
 import { scenarioDurationSeconds } from '../../services/speechService';
 import styles from './LiveTranscript.module.css';
+
+/** Maximum words shown per turn before the text is clipped. */
+const TURN_WORD_CAP = 60;
+/** Maximum characters shown per turn as an additional guard for long words. */
+const TURN_CHAR_CAP = 420;
+
+/** Returns truncated text and whether truncation was applied. */
+function truncateTurn(text: string): { preview: string; truncated: boolean } {
+  const trimmed = text.trim();
+  const words = trimmed.split(/\s+/).filter(Boolean);
+  const wordPreview = words.slice(0, TURN_WORD_CAP).join(' ');
+  const characterPreview = wordPreview.slice(0, TURN_CHAR_CAP);
+  const preview = characterPreview.length < wordPreview.length
+    ? characterPreview
+    : wordPreview;
+  const truncated = words.length > TURN_WORD_CAP || trimmed.length > preview.length;
+  return { preview: truncated ? preview : trimmed, truncated };
+}
 
 interface LiveTranscriptProps {
   segments: TranscriptSegment[];
@@ -28,6 +46,13 @@ interface LiveTranscriptProps {
   scriptedSeconds: number;
   error: string | null;
   onDismissError: () => void;
+  extensionOrigin: boolean;
+  enableMicPrompt: boolean;
+  onEnableMic: () => void;
+  micGrantNotice: string;
+  speakerMode: Speaker | null;
+  onCycleSpeakerMode: () => void;
+  onFlipSpeaker: (id: string) => void;
 }
 
 const SPEEDS = [1, 2.5];
@@ -70,15 +95,48 @@ export default function LiveTranscript({
   scriptedSeconds,
   error,
   onDismissError,
+  extensionOrigin,
+  enableMicPrompt,
+  onEnableMic,
+  micGrantNotice,
+  speakerMode,
+  onCycleSpeakerMode,
+  onFlipSpeaker,
 }: LiveTranscriptProps) {
   const scrollRef = useRef<HTMLDivElement>(null);
+  const scrollFrameRef = useRef<number | null>(null);
   const [pinned, setPinned] = useState(true);
+  /** Set of segment IDs whose text the user has expanded past the word cap. */
+  const [expandedIds, setExpandedIds] = useState<Set<string>>(new Set());
+
+  const toggleExpand = useCallback((id: string) => {
+    setExpandedIds((prev) => {
+      const next = new Set(prev);
+      if (next.has(id)) next.delete(id); else next.add(id);
+      return next;
+    });
+  }, []);
 
   useEffect(() => {
     if (!pinned) return;
-    const node = scrollRef.current;
-    if (node) node.scrollTop = node.scrollHeight;
+    if (scrollFrameRef.current !== null) cancelAnimationFrame(scrollFrameRef.current);
+    scrollFrameRef.current = requestAnimationFrame(() => {
+      const node = scrollRef.current;
+      if (node) node.scrollTop = node.scrollHeight;
+      scrollFrameRef.current = null;
+    });
   }, [segments, interim, pinned]);
+
+  useEffect(() => () => {
+    if (scrollFrameRef.current !== null) cancelAnimationFrame(scrollFrameRef.current);
+  }, []);
+
+  // When a session resets, clear expanded turn previews for the next call.
+  useEffect(() => {
+    if (segments.length === 0) {
+      setExpandedIds(new Set());
+    }
+  }, [segments.length]);
 
   const handleScroll = () => {
     const node = scrollRef.current;
@@ -89,6 +147,7 @@ export default function LiveTranscript({
 
   const wordCount = segments.reduce((total, segment) => total + segment.text.split(/\s+/).length, 0);
   const active = listening || simulating;
+  const interimPreview = interim ? truncateTurn(interim.text).preview : '';
 
   return (
     <section className={styles.transcript} aria-label="Live transcript">
@@ -112,6 +171,9 @@ export default function LiveTranscript({
             <span>You (Mic)</span><i><b style={{ width: `${Math.max(3, audioLevels.mic * 100)}%`, background: 'var(--color-local)' }} /></i>
             <span>Prospect (Tab)</span><i><b style={{ width: `${Math.max(3, audioLevels.tab * 100)}%`, background: 'var(--color-cloud)' }} /></i>
           </div>}
+          <button type="button" className={styles.speakerMode} onClick={onCycleSpeakerMode} disabled={tabMode} title={tabMode ? 'Tab and microphone tracks have separate speaker labels' : undefined} aria-label="Cycle active speaker override">
+            🎙️ Speaking: {speakerMode ?? 'Auto (You / Guest)'}
+          </button>
         </div>
 
         <div className={styles.stats}>
@@ -232,6 +294,12 @@ export default function LiveTranscript({
         </div>
       )}
 
+      {extensionOrigin && enableMicPrompt && <div className={styles.errorBanner} role="status">
+        <span>Chrome needs microphone access granted from a full browser tab first.</span>
+        <button type="button" onClick={onEnableMic}>Enable Extension Mic</button>
+      </div>}
+      {micGrantNotice && <div className={styles.errorBanner} role="status">{micGrantNotice}</div>}
+
       <div className={styles.feed} ref={scrollRef} onScroll={handleScroll}>
         {segments.length === 0 && !interim ? (
           <div className={styles.empty}>
@@ -277,18 +345,20 @@ export default function LiveTranscript({
             {segments.map((segment) => {
               const isYou = segment.speaker === 'You (Interviewer)';
               const highlighted = (segment.matchedGoalIds?.length ?? 0) > 0;
+              const expanded = expandedIds.has(segment.id);
+              const { preview, truncated } = truncateTurn(segment.text);
               return (
                 <article
                   key={segment.id}
                   className={`${styles.segment} ${isYou ? styles.you : styles.guest} ${highlighted ? styles.highlighted : ''}`}
                 >
                   <div className={styles.segmentHead}>
-                    <span className={styles.speakerChip}>
+                    <button type="button" className={styles.speakerChip} onClick={() => onFlipSpeaker(segment.id)} title="Click to flip this transcript speaker">
                       <span className={`${styles.avatar} ${isYou ? styles.avatarYou : styles.avatarGuest}`} aria-hidden="true">
                         {isYou ? 'Y' : 'G'}
                       </span>
                       {segment.speaker}
-                    </span>
+                    </button>
                     <span className={styles.time}>{formatTime(segment.timestamp)}</span>
                     {highlighted && (
                       <span className={styles.matchChip} title="Cited as evidence for a session goal">
@@ -304,7 +374,19 @@ export default function LiveTranscript({
                       </span>
                     )}
                   </div>
-                  <p className={styles.segmentText}>{segment.text}</p>
+                  <p className={styles.segmentText}>
+                    {expanded || !truncated ? segment.text : preview}
+                    {truncated && (
+                      <button
+                        type="button"
+                        className={styles.expandToggle}
+                        onClick={() => toggleExpand(segment.id)}
+                        aria-expanded={expanded}
+                      >
+                        {expanded ? '\u00a0show less' : `\u2026\u00a0+${segment.text.split(/\s+/).length - TURN_WORD_CAP} words`}
+                      </button>
+                    )}
+                  </p>
                 </article>
               );
             })}
@@ -321,7 +403,7 @@ export default function LiveTranscript({
                   <span className={styles.time}>live</span>
                 </div>
                 <p className={styles.segmentText}>
-                  {interim.text}
+                  {interimPreview}
                   <span className={styles.caret} aria-hidden="true" />
                 </p>
               </article>
@@ -332,9 +414,13 @@ export default function LiveTranscript({
                 type="button"
                 className={styles.jumpButton}
                 onClick={() => {
-                  const node = scrollRef.current;
-                  if (node) node.scrollTop = node.scrollHeight;
                   setPinned(true);
+                  if (scrollFrameRef.current !== null) cancelAnimationFrame(scrollFrameRef.current);
+                  scrollFrameRef.current = requestAnimationFrame(() => {
+                    const node = scrollRef.current;
+                    if (node) node.scrollTop = node.scrollHeight;
+                    scrollFrameRef.current = null;
+                  });
                 }}
               >
                 Jump to live

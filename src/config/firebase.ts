@@ -1,9 +1,11 @@
 import { FirebaseError, initializeApp, getApp, getApps, type FirebaseApp } from 'firebase/app';
 import {
   GoogleAuthProvider,
+  EmailAuthProvider,
   createUserWithEmailAndPassword,
   getAuth,
   linkWithPopup,
+  linkWithCredential,
   onAuthStateChanged,
   signInAnonymously,
   signInWithEmailAndPassword,
@@ -12,6 +14,7 @@ import {
   signOut,
   type Auth,
   type User,
+  type UserCredential,
 } from 'firebase/auth';
 import {
   initializeFirestore,
@@ -34,6 +37,7 @@ import { initializeAppCheck, ReCaptchaEnterpriseProvider } from 'firebase/app-ch
  */
 
 const env = import.meta.env;
+export const isExtensionOrigin = typeof window !== 'undefined' && window.location.protocol === 'chrome-extension:';
 
 export const firebaseConfig = {
   apiKey: env.VITE_FIREBASE_API_KEY ?? '',
@@ -52,13 +56,14 @@ let app: FirebaseApp | null = null;
 let auth: Auth | null = null;
 let db: Firestore | null = null;
 let appCheckReady = false;
+let firestoreMode: 'persistent-local-cache' | 'memory-cache' | 'localStorage' = 'localStorage';
 
 if (isFirebaseConfigured) {
   try {
     app = getApps().length > 0 ? getApp() : initializeApp(firebaseConfig);
 
     // --- App Check ---------------------------------------------------------
-    const extensionOrigin = window.location.protocol === 'chrome-extension:';
+    const extensionOrigin = isExtensionOrigin;
     if (extensionOrigin) {
       (self as unknown as Record<string, unknown>).FIREBASE_APPCHECK_DEBUG_TOKEN = env.VITE_APPCHECK_DEBUG_TOKEN || true;
     } else if (env.VITE_APPCHECK_DEBUG_TOKEN) {
@@ -88,10 +93,12 @@ if (isFirebaseConfigured) {
       db = initializeFirestore(app, {
         localCache: persistentLocalCache({ tabManager: persistentMultipleTabManager() }),
       });
+      firestoreMode = 'persistent-local-cache';
     } catch (cacheError) {
       console.warn('[PulseBrief] IndexedDB cache unavailable, falling back to memory cache.', cacheError);
       const { getFirestore } = await import('firebase/firestore');
       db = getFirestore(app);
+      firestoreMode = 'memory-cache';
     }
   } catch (error) {
     console.error('[PulseBrief] Firebase failed to initialize — running local-only.', error);
@@ -117,6 +124,7 @@ const GUEST_KEY = 'pulsebrief.guestId';
 const LOCAL_PROFILE_KEY = 'pulsebrief.localProfile';
 
 export function getGuestId(): string {
+  if (isExtensionOrigin) return getExtensionGuestId();
   try {
     const existing = localStorage.getItem(GUEST_KEY);
     if (existing) return existing;
@@ -185,12 +193,15 @@ export function ensureSignedIn(): Promise<string | null> {
 
   if (auth.currentUser) return Promise.resolve(auth.currentUser.uid);
 
+  if (isExtensionOrigin) return Promise.resolve(getExtensionGuestId());
+
   if (!signInPromise) {
     signInPromise = signInAnonymously(auth)
       .then((credential) => credential.user.uid)
       .catch((error: unknown) => {
         console.warn('[PulseBrief] Anonymous auth unavailable — using local guest id.', error);
-        return getGuestId();
+        const code = error instanceof FirebaseError ? error.code : '';
+        return isExtensionAuthError(code) ? getExtensionGuestId() : getGuestId();
       })
       .finally(() => {
         signInPromise = null;
@@ -200,13 +211,27 @@ export function ensureSignedIn(): Promise<string | null> {
   return signInPromise;
 }
 
-export async function signInWithGoogleAccount(): Promise<AuthSession> {
-  if (!auth) {
-    throw new Error('Firebase Auth is not configured in this environment yet.');
+function isExtensionAuthError(code: string): boolean {
+  return code === 'auth/unauthorized-domain' || code === 'auth/operation-not-allowed';
+}
+
+function getExtensionGuestId(): string {
+  const key = 'pulsebrief_ext_uid';
+  try {
+    const existing = localStorage.getItem(key);
+    if (existing) return existing;
+    const created = `local_ext_${typeof crypto.randomUUID === 'function' ? crypto.randomUUID() : Math.random().toString(36).slice(2)}`;
+    localStorage.setItem(key, created);
+    return created;
+  } catch {
+    return 'local_ext_guest';
   }
-  const provider = new GoogleAuthProvider();
-  const credential = await signInWithPopup(auth, provider);
-  return toAuthSession(credential.user);
+}
+
+export async function signInWithGoogleAccount(): Promise<AuthSession> {
+  await signInWithGoogle();
+  if (!auth?.currentUser) throw new Error('Google sign-in did not return an authenticated user.');
+  return toAuthSession(auth.currentUser);
 }
 
 export async function signInWithEmailAccount(
@@ -229,9 +254,22 @@ export async function signInWithEmailAccount(
     writeLocalProfile(localSession);
     return localSession;
   }
-  const credential = createAccount
-    ? await createUserWithEmailAndPassword(auth, trimmed, password)
-    : await signInWithEmailAndPassword(auth, trimmed, password);
+  let credential: UserCredential;
+  if (createAccount && auth.currentUser?.isAnonymous) {
+    try {
+      credential = await linkWithCredential(
+        auth.currentUser,
+        EmailAuthProvider.credential(trimmed, password),
+      );
+    } catch (error) {
+      if ((error as FirebaseError).code !== 'auth/credential-already-in-use') throw error;
+      credential = await signInWithEmailAndPassword(auth, trimmed, password);
+    }
+  } else {
+    credential = createAccount
+      ? await createUserWithEmailAndPassword(auth, trimmed, password)
+      : await signInWithEmailAndPassword(auth, trimmed, password);
+  }
   return toAuthSession(credential.user);
 }
 
@@ -312,5 +350,5 @@ export const firebaseMeta = {
   projectId: firebaseConfig.projectId || null,
   appCheck: appCheckReady,
   authMode: auth ? 'firebase-auth' : 'local-guest',
-  firestore: db ? 'persistent-local-cache' : 'localStorage',
+  firestore: firestoreMode,
 } as const;

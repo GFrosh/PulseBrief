@@ -139,6 +139,17 @@
   padding: 14px 14px 8px;
 }
 
+.emptyState {
+  margin: 12px 4px;
+  padding: 14px;
+  border: 1px dashed var(--border-strong);
+  border-radius: var(--radius-md);
+  color: var(--text-secondary);
+  font-size: 11px;
+  line-height: 1.6;
+  background: var(--surface-1);
+}
+
 .card {
   position: relative;
   padding: 11px 12px 11px 13px;
@@ -371,6 +382,8 @@
   border-color: var(--color-local-line);
   background: var(--color-local-soft);
 }
+
+.addButton:disabled { opacity: 0.45; cursor: not-allowed; }
 
 .resetButton {
   height: 32px;

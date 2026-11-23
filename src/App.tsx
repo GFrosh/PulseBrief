@@ -42,11 +42,12 @@ import {
   synthesizePostCallBrief,
 } from './services/hybridAI';
 import { listLocalSessions, listSessions, saveSession } from './services/sessionStore';
-import { getGuestId, watchAuthSession, type AuthSession } from './config/firebase';
+import { getGuestId, isExtensionOrigin, watchAuthSession, type AuthSession } from './config/firebase';
 import styles from './App.module.css';
 
 type ModalPhase = 'ready' | 'redacting' | 'cloud';
 type MobilePane = 'transcript' | 'goals' | 'copilot';
+const OPEN_CALL_ID = 'OPEN_FREEFORM';
 
 const makeId = (prefix: string): string =>
   `${prefix}_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 7)}`;
@@ -74,16 +75,14 @@ const CAPTURE_MODE =
   typeof window !== 'undefined' && new URLSearchParams(window.location.search).get('capture') === '1';
 
 export default function App() {
-  const initialScenario = getScenario(INITIAL_SCENARIO_ID);
-
   const [mobilePane, setMobilePane] = useState<MobilePane>('transcript');
   const [theme, setTheme] = useState<'dark' | 'light'>(() => {
     const saved = window.localStorage.getItem('pulsebrief-theme');
     if (saved === 'dark' || saved === 'light') return saved;
     return window.matchMedia('(prefers-color-scheme: light)').matches ? 'light' : 'dark';
   });
-  const [scenarioId, setScenarioId] = useState<string>(INITIAL_SCENARIO_ID);
-  const [goals, setGoals] = useState<SessionGoal[]>(() => seedGoals(initialScenario));
+  const [scenarioId, setScenarioId] = useState<string>(OPEN_CALL_ID);
+  const [goals, setGoals] = useState<SessionGoal[]>([]);
   const [segments, setSegments] = useState<TranscriptSegment[]>([]);
   const [interim, setInterim] = useState<{ speaker: Speaker; text: string } | null>(null);
   const [nudges, setNudges] = useState<CoPilotNudge[]>([]);
@@ -101,23 +100,26 @@ export default function App() {
     isAnonymous: true,
     isGuest: true,
   }));
-  const [savedCount, setSavedCount] = useState<number>(() => listLocalSessions().length);
+  const [savedCount, setSavedCount] = useState<number>(() => listLocalSessions(getGuestId()).length);
   const [accountModalOpen, setAccountModalOpen] = useState(false);
   const [accountModalTab, setAccountModalTab] = useState<'account' | 'history'>('history');
   const [listening, setListening] = useState(false);
   const [tabMode, setTabMode] = useState(false);
   const [audioLevels, setAudioLevels] = useState({ mic: 0, tab: 0 });
+  const [manualSpeaker, setManualSpeaker] = useState<Speaker | null>(null);
   const [simulating, setSimulating] = useState(false);
   const [speed, setSpeed] = useState(1);
   const [elapsed, setElapsed] = useState(0);
   const [error, setError] = useState<string | null>(null);
+  const [enableMicPrompt, setEnableMicPrompt] = useState(false);
+  const [micGrantNotice, setMicGrantNotice] = useState('');
   const [modalOpen, setModalOpen] = useState(false);
   const [phase, setPhase] = useState<ModalPhase>('ready');
   const [brief, setBrief] = useState<PostCallBrief | null>(null);
   const [redactionCount, setRedactionCount] = useState(0);
   const [syncStatus, setSyncStatus] = useState<SyncStatus>('SAVING');
 
-  const scenario = getScenario(scenarioId);
+  const scenario = getScenario(scenarioId === OPEN_CALL_ID ? INITIAL_SCENARIO_ID : scenarioId);
 
   const goalsRef = useRef(goals);
   const segmentsRef = useRef<TranscriptSegment[]>(segments);
@@ -125,12 +127,20 @@ export default function App() {
   const nanoRef = useRef<NanoAvailability>('CHECKING');
   const routingRef = useRef<RoutingMode>('AUTO_HYBRID');
   const speedRef = useRef(1);
+  const manualSpeakerRef = useRef<Speaker | null>(null);
+  const interimBySpeakerRef = useRef<Partial<Record<Speaker, string>>>({});
+  const displayedInterimSpeakerRef = useRef<Speaker | null>(null);
+  const audioMeterFrameRef = useRef<number | null>(null);
   const turnCountRef = useRef(0);
   const recorderRef = useRef<LiveMicRecorder | null>(null);
+  const micRecorderRef = useRef<LiveMicRecorder | null>(null);
+  const tabRecognitionActiveRef = useRef(false);
+  const micRecognitionActiveRef = useRef(false);
   const tabCaptureRef = useRef<TabAudioCapture | null>(null);
   const streamerRef = useRef<SimulatedCallStreamer | null>(null);
   const analysisBusyRef = useRef(false);
   const analysisPendingRef = useRef(false);
+  const analysisGenerationRef = useRef(0);
   const synthBusyRef = useRef(false);
   const seededRef = useRef(false);
   const bootedAtRef = useRef(Date.now());
@@ -161,6 +171,22 @@ export default function App() {
       nanoRef.current = result.status;
       setDismissedBanner(null);
     });
+  }, []);
+
+  useEffect(() => {
+    if (new URLSearchParams(window.location.search).get('grantMic') !== '1') return;
+    navigator.mediaDevices.getUserMedia({ audio: true }).then((granted) => {
+      granted.getTracks().forEach((track) => track.stop());
+      setMicGrantNotice('Microphone enabled. Close this tab and return to the PulseBrief Side Panel.');
+    }).catch(() => setMicGrantNotice('Microphone permission was not granted. Try again from this tab.'));
+  }, []);
+
+  const openMicGrant = useCallback(() => {
+    const target = `${window.location.origin}${window.location.pathname}?grantMic=1`;
+    const chromeApi = (window as Window & { chrome?: { tabs?: { create(options: { url: string }): void }; runtime?: { getURL(path: string): string } } }).chrome;
+    const url = chromeApi?.runtime?.getURL('index.html?grantMic=1') ?? target;
+    if (chromeApi?.tabs?.create) chromeApi.tabs.create({ url });
+    else window.open(url, '_blank', 'noopener');
   }, []);
 
   useEffect(() => {
@@ -245,23 +271,31 @@ export default function App() {
       return;
     }
     analysisBusyRef.current = true;
+    const generation = analysisGenerationRef.current;
 
     try {
       do {
         analysisPendingRef.current = false;
         const transcript = buildTranscript(segmentsRef.current);
         if (!transcript.trim()) break;
+        // FORCE_CLOUD applies to live inference too; sanitize before either live
+        // prompt so raw PII never leaves the browser before the final gate.
+        const safeTranscript = applyDeterministicRedaction(transcript).sanitizedTranscript;
 
         const [goalResult, nudgeResult] = await Promise.all([
-          evaluateLiveGoals(transcript.slice(-6000), goalsRef.current, routingRef.current, nanoRef.current),
+          evaluateLiveGoals(safeTranscript.slice(-6000), goalsRef.current, routingRef.current, nanoRef.current),
           generateLiveFollowUpNudge(
-            transcript.slice(-2500),
+            safeTranscript.slice(-2500),
             goalsRef.current,
             routingRef.current,
             nanoRef.current,
             turnCountRef.current,
           ),
         ]);
+
+        // A scenario/session reset may happen while an inference request is in
+        // flight. Discard results from the previous session before touching UI.
+        if (generation !== analysisGenerationRef.current) break;
 
         recordCall(goalResult.meta.source, goalResult.meta.latencyMs, transcript);
         recordCall(nudgeResult.meta.source, nudgeResult.meta.latencyMs, transcript);
@@ -270,7 +304,8 @@ export default function App() {
           setGoals((previous) => {
             const next = previous.map((goal) => {
               const update = goalResult.data.updates.find((entry) => entry.id === goal.id);
-              if (!update || update.status === goal.status) return goal;
+              const rank = { pending: 0, partial: 1, covered: 2 };
+              if (!update || rank[update.status] <= rank[goal.status]) return goal;
               return {
                 ...goal,
                 status: update.status,
@@ -340,24 +375,44 @@ export default function App() {
       console.error('[PulseBrief] Analysis loop failed', analysisError);
     } finally {
       analysisBusyRef.current = false;
+      if (analysisPendingRef.current) void analyzeTranscript();
     }
   }, [pushActivity, recordCall]);
 
   /* --- Audio pipeline ---------------------------------------------------- */
 
   const handleInterim = useCallback((speaker: Speaker, text: string) => {
-    setInterim(text.trim() ? { speaker, text } : null);
+    const trimmed = text.trim();
+    if (trimmed) interimBySpeakerRef.current[speaker] = trimmed;
+    else delete interimBySpeakerRef.current[speaker];
+    if (trimmed) {
+      displayedInterimSpeakerRef.current = speaker;
+      setInterim({ speaker: manualSpeakerRef.current ?? speaker, text: trimmed });
+    } else {
+      setInterim((current) => {
+        if (displayedInterimSpeakerRef.current !== speaker) return current;
+        const remaining = Object.entries(interimBySpeakerRef.current).find(([, value]) => value);
+        displayedInterimSpeakerRef.current = remaining ? remaining[0] as Speaker : null;
+        return remaining ? { speaker: manualSpeakerRef.current ?? remaining[0] as Speaker, text: remaining[1] as string } : null;
+      });
+    }
   }, []);
 
   const handleFinal = useCallback(
     (speaker: Speaker, text: string) => {
       const trimmed = text.trim();
       if (!trimmed) return;
-      setInterim(null);
+      delete interimBySpeakerRef.current[speaker];
+      setInterim((current) => {
+        if (displayedInterimSpeakerRef.current !== speaker) return current;
+        const remaining = Object.entries(interimBySpeakerRef.current).find(([, value]) => value);
+        displayedInterimSpeakerRef.current = remaining ? remaining[0] as Speaker : null;
+        return remaining ? { speaker: manualSpeakerRef.current ?? remaining[0] as Speaker, text: remaining[1] as string } : null;
+      });
 
       const segment: TranscriptSegment = {
         id: makeId('seg'),
-        speaker,
+        speaker: manualSpeakerRef.current ?? speaker,
         text: trimmed,
         timestamp: new Date().toISOString(),
         isFinal: true,
@@ -373,8 +428,14 @@ export default function App() {
   );
 
   const stopAll = useCallback(() => {
+    if (audioMeterFrameRef.current !== null) cancelAnimationFrame(audioMeterFrameRef.current);
+    audioMeterFrameRef.current = null;
     recorderRef.current?.stop();
     recorderRef.current = null;
+    micRecorderRef.current?.stop();
+    micRecorderRef.current = null;
+    tabRecognitionActiveRef.current = false;
+    micRecognitionActiveRef.current = false;
     tabCaptureRef.current?.stop();
     tabCaptureRef.current = null;
     setTabMode(false);
@@ -384,10 +445,33 @@ export default function App() {
     setListening(false);
     setSimulating(false);
     setInterim(null);
+    interimBySpeakerRef.current = {};
+    displayedInterimSpeakerRef.current = null;
+  }, []);
+
+  const cycleSpeakerMode = useCallback(() => {
+    setManualSpeaker((current) => {
+      const next = current === null ? 'You (Interviewer)' : current === 'You (Interviewer)' ? 'Guest (Prospect)' : null;
+      manualSpeakerRef.current = next;
+      return next;
+    });
+  }, []);
+
+  const flipSegmentSpeaker = useCallback((id: string) => {
+    const next = segmentsRef.current.map((segment) => segment.id === id ? {
+      ...segment,
+      speaker: segment.speaker === 'You (Interviewer)' ? 'Guest (Prospect)' as const : 'You (Interviewer)' as const,
+    } : segment);
+    segmentsRef.current = next;
+    setSegments(next);
   }, []);
 
   const resetSession = useCallback(() => {
     stopAll();
+    analysisGenerationRef.current += 1;
+    analysisPendingRef.current = false;
+    manualSpeakerRef.current = null;
+    setManualSpeaker(null);
     segmentsRef.current = [];
     setSegments([]);
     setNudges([]);
@@ -425,8 +509,11 @@ export default function App() {
     const recorder = new LiveMicRecorder({
       onInterim: handleInterim,
       onFinal: handleFinal,
-      onError: (message) => setError(message),
-      onListeningChange: (value) => setListening(value),
+      onError: (message) => { setError(message); if (/microphone|mic|not allowed/i.test(message)) setEnableMicPrompt(true); },
+      onListeningChange: (value) => {
+        micRecognitionActiveRef.current = value;
+        setListening(value || tabRecognitionActiveRef.current);
+      },
     });
     recorderRef.current = recorder;
     recorder.start();
@@ -435,7 +522,15 @@ export default function App() {
   const stopMic = useCallback(() => {
     recorderRef.current?.stop();
     recorderRef.current = null;
+    micRecorderRef.current?.stop();
+    micRecorderRef.current = null;
+    tabCaptureRef.current?.stop();
+    tabCaptureRef.current = null;
+    tabRecognitionActiveRef.current = false;
+    micRecognitionActiveRef.current = false;
+    setTabMode(false);
     setListening(false);
+    setAudioLevels({ mic: 0, tab: 0 });
   }, []);
 
   const startTabAudio = useCallback(async () => {
@@ -443,36 +538,84 @@ export default function App() {
     if (!isLiveMicSupported()) { setError('Speech recognition is unavailable. Use Chrome or Edge.'); return; }
     const capture = new TabAudioCapture();
     tabCaptureRef.current = capture;
-    capture.onLevels = (mic, tab) => setAudioLevels({ mic, tab });
+    capture.onLevels = (mic, tab) => {
+      if (audioMeterFrameRef.current !== null) cancelAnimationFrame(audioMeterFrameRef.current);
+      audioMeterFrameRef.current = requestAnimationFrame(() => {
+        audioMeterFrameRef.current = null;
+        setAudioLevels({ mic, tab });
+      });
+    };
     capture.onEnded = () => {
       recorderRef.current?.stop(); recorderRef.current = null;
+      micRecorderRef.current?.stop(); micRecorderRef.current = null;
+      tabRecognitionActiveRef.current = false;
+      micRecognitionActiveRef.current = false;
       capture.stop(); tabCaptureRef.current = null; setTabMode(false); setListening(false);
       setError('Meeting tab sharing ended. You can start a new capture at any time.');
     };
     try {
       await capture.start();
+      if (capture.micDenied) {
+        if (isExtensionOrigin) setEnableMicPrompt(true);
+        setError('Microphone access is unavailable; the shared tab will transcribe, but your speech will not.');
+      }
       setTabMode(true);
-      const recorder = new LiveMicRecorder({ onInterim: handleInterim, onFinal: handleFinal, onError: setError, onListeningChange: setListening });
-      recorder.speakerResolver = () => capture.micLevel > 0.025 && capture.micLevel > capture.tabLevel * 1.25 ? 'You (Interviewer)' : 'Guest (Prospect)';
-      recorderRef.current = recorder;
-      recorder.start();
+      const tabTrack = capture.tabSpeechTrack;
+      if (!tabTrack) throw new Error('No live tab audio track was available for speech recognition.');
+      const makeCallbacks = (speaker: Speaker, source: 'tab' | 'mic') => ({
+        onInterim: (_recognizedSpeaker: Speaker, text: string) => handleInterim(speaker, text),
+        onFinal: (_recognizedSpeaker: Speaker, text: string) => handleFinal(speaker, text),
+        onError: (message: string) => { setError(message); if (/microphone|mic|not allowed/i.test(message)) setEnableMicPrompt(true); },
+        onListeningChange: (value: boolean) => {
+          if (source === 'tab') tabRecognitionActiveRef.current = value;
+          else micRecognitionActiveRef.current = value;
+          setListening(tabRecognitionActiveRef.current || micRecognitionActiveRef.current);
+        },
+      });
+      const tabRecorder = new LiveMicRecorder(makeCallbacks('Guest (Prospect)', 'tab'), tabTrack);
+      recorderRef.current = tabRecorder;
+      const tabStarted = tabRecorder.start();
+      const micTrack = capture.microphoneSpeechTrack;
+      const micRecorder = micTrack
+        ? new LiveMicRecorder(makeCallbacks('You (Interviewer)', 'mic'), micTrack)
+        : null;
+      micRecorderRef.current = micRecorder;
+      const micStarted = micRecorder?.start() ?? false;
+      if (!tabStarted && !micStarted) {
+        recorderRef.current = null;
+        micRecorderRef.current = null;
+        capture.stop(); tabCaptureRef.current = null; setTabMode(false);
+        setError('Could not start speech recognition from the shared audio. Update Chrome or Edge and try again.');
+        return;
+      }
     } catch (cause) {
       capture.stop(); tabCaptureRef.current = null; setTabMode(false);
       const cancelled = cause instanceof DOMException && cause.name === 'NotAllowedError';
-      setError(cancelled ? 'Tab audio selection was cancelled.' : 'Could not capture tab audio. Check Chrome tab audio sharing permissions.');
+      setError(cancelled ? 'Tab audio selection was cancelled.' : cause instanceof Error ? cause.message : 'Could not capture tab audio. Check Chrome tab audio sharing permissions.');
     }
   }, [handleFinal, handleInterim, resetSession]);
 
   const stopTabAudio = useCallback(() => {
     recorderRef.current?.stop(); recorderRef.current = null;
+    micRecorderRef.current?.stop(); micRecorderRef.current = null;
     tabCaptureRef.current?.stop(); tabCaptureRef.current = null;
+    tabRecognitionActiveRef.current = false;
+    micRecognitionActiveRef.current = false;
     setTabMode(false); setListening(false); setAudioLevels({ mic: 0, tab: 0 });
   }, []);
 
   const startSimulation = useCallback(() => {
     resetSession();
+    const simulationScenarioId = scenarioId === OPEN_CALL_ID ? INITIAL_SCENARIO_ID : scenarioId;
+    const simulationScenario = getScenario(simulationScenarioId);
+    if (simulationScenarioId !== scenarioId) {
+      setScenarioId(simulationScenarioId);
+      const simulationGoals = seedGoals(simulationScenario);
+      goalsRef.current = simulationGoals;
+      setGoals(simulationGoals);
+    }
     const streamer = new SimulatedCallStreamer({
-      scenario: getScenario(scenarioId),
+      scenario: simulationScenario,
       speed: speedRef.current,
       onInterim: handleInterim,
       onFinal: handleFinal,
@@ -512,6 +655,10 @@ export default function App() {
 
     synthBusyRef.current = true;
     stopAll();
+    if (analysisBusyRef.current) {
+      analysisPendingRef.current = true;
+      while (analysisBusyRef.current) await sleep(20);
+    }
     setModalOpen(true);
     setPhase('redacting');
     setBrief(null);
@@ -556,9 +703,9 @@ export default function App() {
         goalsRef.current,
         telemetryRef.current,
         {
-          company: scenario.company,
-          contact: scenario.contact,
-          role: scenario.role,
+          company: scenarioId === OPEN_CALL_ID ? 'Open Call' : scenario.company,
+          contact: scenarioId === OPEN_CALL_ID ? 'Guest' : scenario.contact,
+          role: scenarioId === OPEN_CALL_ID ? 'Freeform conversation' : scenario.role,
           rawTranscript: fullTranscript,
           redactionCount: redaction.data.redactionCount,
         },
@@ -593,7 +740,7 @@ export default function App() {
     } finally {
       synthBusyRef.current = false;
     }
-  }, [applyTelemetry, authSession.uid, pushActivity, recordCall, scenario, stopAll]);
+  }, [applyTelemetry, authSession.uid, pushActivity, recordCall, scenario, scenarioId, stopAll]);
 
   const endCallRef = useRef(handleEndCall);
   endCallRef.current = handleEndCall;
@@ -613,9 +760,10 @@ export default function App() {
   }, []);
 
   const handleAddGoal = useCallback(() => {
+    if (goalsRef.current.length >= 5) return;
     const goal: SessionGoal = {
       id: makeId('goal'),
-      text: 'New goal — click the text to edit',
+      text: 'New goal — click the edit icon',
       status: 'pending',
     };
     setGoals((previous) => {
@@ -651,7 +799,7 @@ export default function App() {
   }, []);
 
   const handleResetGoals = useCallback(() => {
-    const next = seedGoals(getScenario(scenarioId));
+    const next = scenarioId === OPEN_CALL_ID ? [] : seedGoals(getScenario(scenarioId));
     goalsRef.current = next;
     setGoals(next);
   }, [scenarioId]);
@@ -660,7 +808,7 @@ export default function App() {
     (nextScenarioId: string) => {
       resetSession();
       setScenarioId(nextScenarioId);
-      const next = seedGoals(getScenario(nextScenarioId));
+      const next = nextScenarioId === OPEN_CALL_ID ? [] : seedGoals(getScenario(nextScenarioId));
       goalsRef.current = next;
       setGoals(next);
     },
@@ -678,6 +826,23 @@ export default function App() {
 
   const handleNudgeAsked = useCallback((nudgeId: string) => {
     setNudges((previous) => previous.map((nudge) => (nudge.id === nudgeId ? { ...nudge, asked: true } : nudge)));
+  }, []);
+
+  const handleBriefModalClose = useCallback(() => setModalOpen(false), []);
+  const handleAccountModalClose = useCallback(() => {
+    setAccountModalOpen(false);
+    void listSessions(authSession.uid).then((items) => setSavedCount(items.length));
+  }, [authSession.uid]);
+  const handleAccountSessionChange = useCallback((nextSession: AuthSession) => {
+    setAuthSession(nextSession);
+    void listSessions(nextSession.uid).then((items) => setSavedCount(items.length));
+  }, []);
+  const handleOpenSavedBrief = useCallback((selectedBrief: PostCallBrief) => {
+    setBrief(selectedBrief);
+    setRedactionCount(selectedBrief.redactionCount);
+    setSyncStatus(selectedBrief.syncStatus);
+    setPhase('ready');
+    setModalOpen(true);
   }, []);
 
   /* --- Judge deep links (?seed=1&brief=1) -------------------------------- */
@@ -759,7 +924,7 @@ export default function App() {
   const coveredCount = goals.filter((goal) => goal.status === 'covered').length;
   const activeNudgeCount = nudges.filter((nudge) => !nudge.dismissed).length;
   const demoMode = isDemoEngine;
-  const localActive = (!demoMode && nano === 'AVAILABLE') || (!online && demoMode);
+  const localActive = demoMode || routingMode === 'FORCE_LOCAL' || !online || (routingMode === 'AUTO_HYBRID' && nano === 'AVAILABLE');
   const micSupported = isLiveMicSupported();
   const scriptedSeconds = scenarioDurationSeconds(scenario, speed);
 
@@ -855,6 +1020,9 @@ export default function App() {
             onStopTabAudio={stopTabAudio}
             tabMode={tabMode}
             audioLevels={audioLevels}
+            speakerMode={manualSpeaker}
+            onCycleSpeakerMode={cycleSpeakerMode}
+            onFlipSpeaker={flipSegmentSpeaker}
             onSimulate={startSimulation}
             onStopSimulation={stopSimulation}
             onEndCall={handleEndCall}
@@ -866,11 +1034,15 @@ export default function App() {
             canSynthesize={segments.length > 0}
             synthesizing={phase === 'redacting' || phase === 'cloud'}
             elapsedLabel={formatElapsed(elapsed)}
-            sessionTitle={scenario.company}
-            sessionMeta={`${scenario.contact} · ${scenario.role}`}
+            sessionTitle={scenarioId === OPEN_CALL_ID ? 'Open / Freeform Call' : scenario.company}
+            sessionMeta={scenarioId === OPEN_CALL_ID ? 'No preset goals' : `${scenario.contact} · ${scenario.role}`}
             scriptedSeconds={scriptedSeconds}
             error={error}
             onDismissError={() => setError(null)}
+            extensionOrigin={isExtensionOrigin}
+            enableMicPrompt={enableMicPrompt}
+            onEnableMic={openMicGrant}
+            micGrantNotice={micGrantNotice}
           />
         </div>
 
@@ -894,28 +1066,16 @@ export default function App() {
         brief={brief}
         redactionCount={redactionCount}
         syncStatus={syncStatus}
-        onClose={() => setModalOpen(false)}
+        onClose={handleBriefModalClose}
       />
 
       <AccountAndHistoryModal
         open={accountModalOpen}
         initialTab={accountModalTab}
         session={authSession}
-        onSessionChange={(nextSession) => {
-          setAuthSession(nextSession);
-          listSessions(nextSession.uid).then((items) => setSavedCount(items.length));
-        }}
-        onOpenBrief={(selectedBrief) => {
-          setBrief(selectedBrief);
-          setRedactionCount(selectedBrief.redactionCount);
-          setSyncStatus(selectedBrief.syncStatus);
-          setPhase('ready');
-          setModalOpen(true);
-        }}
-        onClose={() => {
-          setAccountModalOpen(false);
-          listSessions(authSession.uid).then((items) => setSavedCount(items.length));
-        }}
+        onSessionChange={handleAccountSessionChange}
+        onOpenBrief={handleOpenSavedBrief}
+        onClose={handleAccountModalClose}
       />
 
       <p className={styles.bootNote} aria-hidden="true">
