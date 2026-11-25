@@ -308,20 +308,85 @@ interface CallOutcome<T> {
   promptTokens: number;
 }
 
+/**
+ * live  - goal checks and nudges, only useful within a few seconds
+ * gate  - the privacy rewrite (the regex pass always runs after it)
+ * brief - the post-call brief
+ */
+type CallTier = 'live' | 'gate' | 'brief';
+
+const envMs = (value: unknown, fallback: number): number => {
+  const parsed = Number(value);
+  return Number.isFinite(parsed) && parsed > 0 ? parsed : fallback;
+};
+
+/** How long to wait for a model before using the backup engine instead. */
+const TIMEOUT_MS: Record<'device' | 'cloud', Record<CallTier, number>> = {
+  device: {
+    live: envMs(import.meta.env.VITE_AI_LOCAL_LIVE_TIMEOUT_MS, 8000),
+    gate: envMs(import.meta.env.VITE_AI_LOCAL_GATE_TIMEOUT_MS, 6000),
+    brief: 60000,
+  },
+  cloud: { live: 30000, gate: 20000, brief: 60000 },
+};
+
+/** Live on-device calls allowed at once: one goal check plus one nudge. */
+const MAX_LIVE_DEVICE_CALLS = 2;
+let liveDeviceCalls = 0;
+
+const TIMED_OUT = Symbol('timed-out');
+
+function withTimeout<T>(work: Promise<T>, ms: number): Promise<T | typeof TIMED_OUT> {
+  return new Promise((resolve, reject) => {
+    const timer = window.setTimeout(() => resolve(TIMED_OUT), ms);
+    work.then(
+      (value) => {
+        window.clearTimeout(timer);
+        resolve(value);
+      },
+      (error: unknown) => {
+        window.clearTimeout(timer);
+        reject(error);
+      },
+    );
+  });
+}
+
 async function runModel<T>(
   mode: RoutingMode,
   nano: NanoAvailability,
   prompt: string,
   parse: (raw: string) => T | null,
+  tier: CallTier = 'live',
 ): Promise<CallOutcome<T> | null> {
   const set = models();
   if (!set) return null;
 
   const { model, source } = pickModel(mode, nano, set);
+  const onDevice = source === 'LOCAL_NANO';
+  const countsAsLiveDeviceCall = onDevice && tier === 'live';
+
+  // A slow on-device model keeps working after we stop waiting for it. Do not
+  // queue more live calls behind it: use the backup engine until it is free.
+  if (countsAsLiveDeviceCall && liveDeviceCalls >= MAX_LIVE_DEVICE_CALLS) return null;
+
+  const limitMs = TIMEOUT_MS[onDevice ? 'device' : 'cloud'][tier];
   const started = performance.now();
+  if (countsAsLiveDeviceCall) liveDeviceCalls += 1;
+  const release = (): void => {
+    if (countsAsLiveDeviceCall) liveDeviceCalls = Math.max(0, liveDeviceCalls - 1);
+  };
 
   try {
-    const response = await model.generateContent(prompt);
+    const work = Promise.resolve().then(() => model.generateContent(prompt));
+    work.then(release, release);
+    const response = await withTimeout(work, limitMs);
+    if (response === TIMED_OUT) {
+      console.warn(
+        `[PulseBrief] ${source} took longer than ${limitMs / 1000}s — using the backup engine for this step.`,
+      );
+      return null;
+    }
     const text = response.response.text();
     const parsed = parse(text);
     if (parsed === null) {
@@ -547,7 +612,7 @@ const PII_RULES: Array<{
   {
     label: 'ADDRESS',
     pattern:
-      /\b\d{2,5}\s+(?:[A-Z][A-Za-z'-]+\s){1,3}(?:Street|St|Avenue|Ave|Road|Rd|Boulevard|Blvd|Drive|Dr|Parkway|Pkwy|Lane|Ln|Way|Court|Ct|Place|Pl)\.?/g,
+      /\b\d{2,5}\s+(?:[A-Z][A-Za-z'-]+\s){1,3}(?:Street|St|Avenue|Ave|Road|Rd|Boulevard|Blvd|Drive|Dr|Parkway|Pkwy|Lane|Ln|Way|Court|Ct|Place|Pl)\b\.?/g,
     replacement: '[REDACTED_ADDRESS]',
   },
   {
@@ -915,56 +980,128 @@ export async function generateLiveFollowUpNudge(
    Op 3 — local PII redaction (privacy gate)
    -------------------------------------------------------------------------- */
 
+/** One thing the on-device model says is still readable in the transcript. */
+export interface FoundItem {
+  text: string;
+  type: string;
+}
+
+const FOUND_PLACEHOLDERS: Record<string, string> = {
+  EMAIL: '[REDACTED_EMAIL]',
+  PHONE: '[REDACTED_PHONE]',
+  ADDRESS: '[REDACTED_ADDRESS]',
+  ID: '[REDACTED_ID]',
+};
+
+const SPOKEN_DIGIT = /\b(?:zero|oh|one|two|three|four|five|six|seven|eight|nine)\b/gi;
+
+/**
+ * An item only counts if it looks like an identifier: it has a digit, an @,
+ * "at ... dot" spoken email, or several spoken digits. This keeps a chatty
+ * model from masking ordinary words.
+ */
+function looksLikeIdentifier(text: string): boolean {
+  if (/\d/.test(text) || text.includes('@')) return true;
+  if (/\bat\b.*\bdot\b/i.test(text)) return true;
+  return (text.match(SPOKEN_DIGIT) ?? []).length >= 4;
+}
+
+/**
+ * Mask the exact strings the model found. The model never rewrites the
+ * transcript: we only replace text that really appears in it, so a wrong answer
+ * can hide a few extra words but can never change or shorten the transcript.
+ */
+export function maskModelFoundItems(
+  transcript: string,
+  found: FoundItem[],
+): { text: string; count: number; entities: string[] } {
+  const speakerLabel = /^(?:interviewer|candidate|guest|you|me|speaker\s*\d*)\s*:?$/i;
+  const wanted = found
+    .filter((item) => item && typeof item.text === 'string')
+    .map((item) => ({ text: item.text.trim(), type: String(item.type ?? '').toUpperCase() }))
+    .filter(
+      (item) =>
+        item.text.length >= 4 &&
+        item.text.length <= 60 &&
+        !item.text.includes('\n') &&
+        !item.text.includes('[REDACTED_') &&
+        !speakerLabel.test(item.text) &&
+        looksLikeIdentifier(item.text),
+    )
+    .slice(0, 12)
+    .sort((a, b) => b.text.length - a.text.length);
+
+  let output = transcript;
+  let count = 0;
+  const entities: string[] = [];
+  for (const item of wanted) {
+    if (!output.includes(item.text)) continue;
+    const label = FOUND_PLACEHOLDERS[item.type] ? item.type : 'ID';
+    output = output.split(item.text).join(FOUND_PLACEHOLDERS[label]);
+    count += 1;
+    entities.push(label);
+  }
+
+  // If the model asked us to hide a large part of the transcript it went wrong:
+  // keep the regex result and ignore its list.
+  if (output.length < transcript.length * 0.6) return { text: transcript, count: 0, entities: [] };
+  return { text: output, count, entities };
+}
+
 export async function redactPiiLocally(
   fullTranscript: string,
   _routingMode: RoutingMode,
   nanoStatus: NanoAvailability = 'AVAILABLE',
 ): Promise<InferenceResult<RedactionOutcome>> {
-  // Remove the deterministic PII set before Nano sees the text. This also
-  // guarantees the raw transcript never reaches Cloud Gemini, even in FORCE_CLOUD.
+  // Step 1: the regex pass is instant and removes the known PII set before Nano
+  // sees the text. This also guarantees the raw transcript never reaches Cloud
+  // Gemini, even in FORCE_CLOUD.
   const firstPass = applyDeterministicRedaction(fullTranscript);
+
+  // Step 2: Nano only LISTS what is still readable (spoken numbers, unusual
+  // formats). A short list is far faster to produce than a full rewrite.
   const prompt = [
     'You are the privacy gate inside PulseBrief, running entirely on-device with Gemini Nano.',
-    'Mask every personal or account-identifying entity in the transcript:',
-    '- personal email addresses -> [REDACTED_EMAIL]',
-    '- phone numbers -> [REDACTED_PHONE]',
-    '- street addresses -> [REDACTED_ADDRESS]',
-    '- account numbers, customer IDs, policy numbers, employee IDs -> [REDACTED_ID]',
-    'Preserve every other word, including punctuation and speaker labels. Never summarise.',
-    'Respond with JSON only: {"sanitizedTranscript":"...","entities":["EMAIL","PHONE"]}',
+    'The transcript below already had obvious emails, phone numbers and IDs masked.',
+    'List anything personal that is STILL readable: email addresses (also spoken, like "sam at mail dot com"),',
+    'phone numbers (also spoken digit by digit), street addresses, account, customer, policy or employee numbers.',
+    'Copy each item exactly as it is written in the transcript. Do not rewrite or summarise the transcript.',
+    'Respond with JSON only: {"items":[{"text":"exact words","type":"EMAIL|PHONE|ADDRESS|ID"}]}',
+    'If nothing is left, respond with {"items":[]}',
     '',
     `TRANSCRIPT:\n${firstPass.sanitizedTranscript}`,
   ].join('\n');
 
-  const remote = await runModel<RedactionOutcome>('FORCE_LOCAL', nanoStatus, prompt, (raw) => {
-    const parsed = safeParseModelJson<{ sanitizedTranscript?: string; entities?: string[] }>(raw, {});
-    if (!parsed || typeof parsed.sanitizedTranscript !== 'string') return null;
-    // Guard against a truncated or summarised rewrite: the sanitized text must
-    // stay comparable in length to the source, or we discard it.
-    if (parsed.sanitizedTranscript.length < firstPass.sanitizedTranscript.length * 0.6) return null;
-    return { sanitizedTranscript: parsed.sanitizedTranscript, redactionCount: 0, entities: parsed.entities ?? [] };
-  });
+  const remote = await runModel<FoundItem[]>('FORCE_LOCAL', nanoStatus, prompt, (raw) => {
+    const parsed = safeParseModelJson<{ items?: unknown }>(raw, {});
+    if (!parsed || !Array.isArray(parsed.items)) return null;
+    return parsed.items
+      .filter((item): item is { text: string; type?: string } => !!item && typeof (item as FoundItem).text === 'string')
+      .map((item) => ({ text: item.text, type: item.type ?? 'ID' }));
+  }, 'gate');
 
-  const simulatedLatency = remote ? 0 : jitter(200, 460);
-  if (!remote) await sleep(simulatedLatency);
+  // Without a model answer the regex result stands. Only pretend to "think" when
+  // no model was ever tried (demo mode), never as an extra wait after a timeout.
+  const simulatedLatency = remote || nanoStatus === 'AVAILABLE' ? 0 : jitter(200, 460);
+  if (simulatedLatency > 0) await sleep(simulatedLatency);
 
-  // The regex pass ALWAYS runs — even on a model response. Belt and braces:
-  // a conservative Nano must never be the reason an email reaches the cloud.
-  const base = remote?.data.sanitizedTranscript ?? firstPass.sanitizedTranscript;
-  const safetyPass = applyDeterministicRedaction(base);
+  // Step 3: mask exactly what Nano listed, then run the regex once more. Belt
+  // and braces: a conservative Nano must never be the reason an email reaches
+  // the cloud.
+  const found = remote ? maskModelFoundItems(firstPass.sanitizedTranscript, remote.data) : null;
+  const safetyPass = applyDeterministicRedaction(found?.text ?? firstPass.sanitizedTranscript);
   const source: InferenceSource = remote ? remote.source : 'DEMO_ENGINE';
 
   return {
     data: {
       sanitizedTranscript: safetyPass.sanitizedTranscript,
-      redactionCount: firstPass.redactionCount + safetyPass.redactionCount,
-      entities: [...firstPass.entities, ...safetyPass.entities],
+      redactionCount: firstPass.redactionCount + (found?.count ?? 0) + safetyPass.redactionCount,
+      entities: [...firstPass.entities, ...(found?.entities ?? []), ...safetyPass.entities],
     },
     meta: {
       source,
       latencyMs: remote ? remote.latencyMs : simulatedLatency,
       tokens: remote?.promptTokens ?? 0,
-      // A model pass that found nothing still costs a call; the regex pass is free.
     },
   };
 }
@@ -1017,7 +1154,7 @@ export async function synthesizePostCallBrief(
     }>(raw, {});
     if (!parsed || !Array.isArray(parsed.executiveSummary) || parsed.executiveSummary.length < 3) return null;
     return parsed;
-  });
+  }, 'brief');
 
   if (remote) {
     const fallback = buildLocalBrief(sanitizedTranscript, goals, telemetry, context, remote.latencyMs);
