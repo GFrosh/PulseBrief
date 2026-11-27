@@ -1,7 +1,6 @@
 import type { InferenceTelemetry, NanoAvailability, RoutingMode } from '../../types/session';
 import type { AuthSession } from '../../config/firebase';
 import { averageLocalLatency } from '../../services/hybridAI';
-import AuthButton from '../AuthButton/AuthButton';
 import styles from './TopBar.module.css';
 
 interface TopBarProps {
@@ -202,8 +201,6 @@ export default function TopBar({
             <span className={styles.telemetryUnit}>cloud</span>
           </span>
         </div>
-
-        <AuthButton />
 
         <button
           type="button"
