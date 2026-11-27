@@ -8,7 +8,9 @@ import {
   type HybridParams,
   type ModelParams,
 } from 'firebase/ai';
-import { app, isFirebaseConfigured } from '../config/firebase';
+import type { FirebaseApp } from 'firebase/app';
+import { app, isFirebaseConfigured, primaryAiApp } from '../config/firebase';
+import { callWithFallback, createProviderBreaker } from './aiFallback';
 import type {
   CoPilotNudge,
   CrmFields,
@@ -173,9 +175,13 @@ interface ModelSet {
   onlyCloud: GenerativeModel;
 }
 
-let aiClient: AI | null = null;
-let modelSet: ModelSet | null = null;
+let fallbackSet: ModelSet | null = null;
+let primarySet: ModelSet | null = null;
+let primaryInitFailed = false;
 let modelInitError: string | null = null;
+
+/** Remembers for a few minutes that the primary AI project is not answering. */
+const primaryBreaker = createProviderBreaker();
 
 const hybridParams = (mode: InferenceMode, temperature: number): HybridParams => ({
   mode,
@@ -194,28 +200,46 @@ export function getModelInitError(): string | null {
   return modelInitError;
 }
 
-function models(): ModelSet | null {
+function buildModelSet(firebaseApp: FirebaseApp): ModelSet {
+  const client: AI = getAI(firebaseApp, { backend: new GoogleAIBackend() });
+  return {
+    preferOnDevice: getGenerativeModel(client, hybridParams(InferenceMode.PREFER_ON_DEVICE, 0.2)),
+    onlyOnDevice: getGenerativeModel(client, hybridParams(InferenceMode.ONLY_ON_DEVICE, 0.2)),
+    onlyCloud: getGenerativeModel(client, {
+      mode: InferenceMode.ONLY_IN_CLOUD,
+      inCloudParams: cloudParams,
+    }),
+  };
+}
+
+interface ModelSets {
+  /** Tried first when it is configured and has not recently failed. */
+  primary: ModelSet | null;
+  /** The main project: always the last resort before the backup engine. */
+  fallback: ModelSet;
+}
+
+function models(): ModelSets | null {
   if (isDemoEngine || !isFirebaseConfigured || !app) return null;
-  if (modelSet) return modelSet;
 
   try {
-    aiClient = aiClient ?? getAI(app, { backend: new GoogleAIBackend() });
-
-    modelSet = {
-      preferOnDevice: getGenerativeModel(aiClient, hybridParams(InferenceMode.PREFER_ON_DEVICE, 0.2)),
-      onlyOnDevice: getGenerativeModel(aiClient, hybridParams(InferenceMode.ONLY_ON_DEVICE, 0.2)),
-      onlyCloud: getGenerativeModel(aiClient, {
-        mode: InferenceMode.ONLY_IN_CLOUD,
-        inCloudParams: cloudParams,
-      }),
-    };
-
-    return modelSet;
+    fallbackSet = fallbackSet ?? buildModelSet(app);
   } catch (error) {
     modelInitError = error instanceof Error ? error.message : 'Firebase AI failed to initialise';
     console.error('[PulseBrief] Firebase AI init failed — using the demo engine.', error);
     return null;
   }
+
+  if (primaryAiApp && !primarySet && !primaryInitFailed) {
+    try {
+      primarySet = buildModelSet(primaryAiApp);
+    } catch (error) {
+      primaryInitFailed = true;
+      console.warn('[PulseBrief] Primary AI project init failed — using the main project.', error);
+    }
+  }
+
+  return { primary: primarySet, fallback: fallbackSet };
 }
 
 export function isCloudReady(): boolean {
@@ -359,10 +383,10 @@ async function runModel<T>(
   parse: (raw: string) => T | null,
   tier: CallTier = 'live',
 ): Promise<CallOutcome<T> | null> {
-  const set = models();
-  if (!set) return null;
+  const sets = models();
+  if (!sets) return null;
 
-  const { model, source } = pickModel(mode, nano, set);
+  const { source } = pickModel(mode, nano, sets.fallback);
   const onDevice = source === 'LOCAL_NANO';
   const countsAsLiveDeviceCall = onDevice && tier === 'live';
 
@@ -372,15 +396,34 @@ async function runModel<T>(
 
   const limitMs = TIMEOUT_MS[onDevice ? 'device' : 'cloud'][tier];
   const started = performance.now();
-  if (countsAsLiveDeviceCall) liveDeviceCalls += 1;
-  const release = (): void => {
-    if (countsAsLiveDeviceCall) liveDeviceCalls = Math.max(0, liveDeviceCalls - 1);
+
+  // One try on one project. A second try (after a failure) only gets the time
+  // that is left, so a step never waits longer than its limit in total.
+  const attempt = (set: ModelSet) => (): Promise<Awaited<ReturnType<GenerativeModel['generateContent']>> | typeof TIMED_OUT> => {
+    const { model } = pickModel(mode, nano, set);
+    const work = Promise.resolve().then(() => model.generateContent(prompt));
+    if (countsAsLiveDeviceCall) {
+      liveDeviceCalls += 1;
+      const release = (): void => {
+        liveDeviceCalls = Math.max(0, liveDeviceCalls - 1);
+      };
+      work.then(release, release);
+    }
+    const remainingMs = Math.max(1500, limitMs - (performance.now() - started));
+    return withTimeout(work, remainingMs);
   };
 
   try {
-    const work = Promise.resolve().then(() => model.generateContent(prompt));
-    work.then(release, release);
-    const response = await withTimeout(work, limitMs);
+    // Nano-only calls never reach a cloud project, so there is nothing to switch.
+    const primarySet = mode === 'FORCE_LOCAL' ? null : sets.primary;
+    const { value: response } = await callWithFallback({
+      primary: primarySet ? attempt(primarySet) : null,
+      fallback: attempt(sets.fallback),
+      breaker: primaryBreaker,
+      isOffline: () => typeof navigator !== 'undefined' && navigator.onLine === false,
+      onSwitch: (kind, error) =>
+        console.warn(`[PulseBrief] Primary AI project failed (${kind}) — switching to the main project.`, error),
+    });
     if (response === TIMED_OUT) {
       console.warn(
         `[PulseBrief] ${source} took longer than ${limitMs / 1000}s — using the backup engine for this step.`,

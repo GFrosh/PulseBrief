@@ -171,6 +171,10 @@ Everything in `.env` is browser-visible by design — Firebase web config is pub
 
 On Firebase's free (Spark) plan, Gemini calls through AI Logic have a **low per-minute quota**. Check the current number in the Firebase console rather than treating any figure in this repo as a promise. Because each live analysis pass sends two requests, a short call can hit that cap quickly. When the API refuses the call, PulseBrief does not crash: the backup engine answers that step.
 
+### Optional second project for AI calls
+
+You can point AI calls at a second Firebase project (for example one with billing and credit) by setting the `VITE_AI_PRIMARY_*` values in `.env.example`. Hosting, sign-in and the database stay on the main project. The app tries the second project first. If it is missing, out of quota, switched off or expired, the same call is retried on the main project straight away, and if that also fails the backup engine answers. A failing project is skipped for a few minutes so the app does not keep waiting on it. Calls forced to run on the device (`FORCE_LOCAL`) never leave the device. The App Check site key for the second project must be created in that project.
+
 ### Enabling Gemini Nano in Chrome
 
 On-device Gemini Nano is **desktop Chrome only**. Chrome's Prompt API docs currently list it for **desktop Chrome 148** (Windows 10/11, macOS 13+, Linux, and Chromebook Plus). Chrome for Android, iOS, and non-Plus ChromeOS are not supported.

@@ -108,7 +108,34 @@ if (isFirebaseConfigured) {
   }
 }
 
-export { app, auth, db };
+// --- Optional primary AI project ------------------------------------------
+// A second Firebase project that only answers AI calls. When it is missing or
+// stops working, hybridAI.ts falls back to the main project above on its own.
+const primaryAiConfig = {
+  apiKey: env.VITE_AI_PRIMARY_API_KEY ?? '',
+  authDomain: env.VITE_AI_PRIMARY_AUTH_DOMAIN ?? '',
+  projectId: env.VITE_AI_PRIMARY_PROJECT_ID ?? '',
+  appId: env.VITE_AI_PRIMARY_APP_ID ?? '',
+};
+
+let primaryAiApp: FirebaseApp | null = null;
+
+if (app && primaryAiConfig.apiKey && primaryAiConfig.projectId && primaryAiConfig.appId) {
+  try {
+    primaryAiApp = initializeApp(primaryAiConfig, 'ai-primary');
+    if (env.VITE_AI_PRIMARY_RECAPTCHA_SITE_KEY && !isExtensionOrigin) {
+      initializeAppCheck(primaryAiApp, {
+        provider: new ReCaptchaEnterpriseProvider(env.VITE_AI_PRIMARY_RECAPTCHA_SITE_KEY),
+        isTokenAutoRefreshEnabled: true,
+      });
+    }
+  } catch (error) {
+    console.warn('[PulseBrief] Primary AI project failed to initialize — using the main project.', error);
+    primaryAiApp = null;
+  }
+}
+
+export { app, auth, db, primaryAiApp };
 export const isAppCheckEnabled = appCheckReady;
 
 export interface AuthSession {

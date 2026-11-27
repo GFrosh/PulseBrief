@@ -66,6 +66,13 @@ jobs:
           VITE_FIREBASE_MESSAGING_SENDER_ID: ${{ secrets.VITE_FIREBASE_MESSAGING_SENDER_ID }}
           VITE_FIREBASE_APP_ID: ${{ secrets.VITE_FIREBASE_APP_ID }}
           VITE_RECAPTCHA_SITE_KEY: ${{ secrets.VITE_RECAPTCHA_SITE_KEY }}
+          # Optional: second Firebase project used only for AI calls. If these
+          # are not set, the app simply uses the main project for AI.
+          VITE_AI_PRIMARY_API_KEY: ${{ secrets.VITE_AI_PRIMARY_API_KEY }}
+          VITE_AI_PRIMARY_AUTH_DOMAIN: ${{ secrets.VITE_AI_PRIMARY_AUTH_DOMAIN }}
+          VITE_AI_PRIMARY_PROJECT_ID: ${{ secrets.VITE_AI_PRIMARY_PROJECT_ID }}
+          VITE_AI_PRIMARY_APP_ID: ${{ secrets.VITE_AI_PRIMARY_APP_ID }}
+          VITE_AI_PRIMARY_RECAPTCHA_SITE_KEY: ${{ secrets.VITE_AI_PRIMARY_RECAPTCHA_SITE_KEY }}
           VITE_APPCHECK_DEBUG_TOKEN: ''
         run: npm run build
 
